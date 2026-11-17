@@ -178,6 +178,10 @@ func TestLikeCommandPipeline(t *testing.T) {
 	}
 	detailKey := cache.Key("video:detail:id=%d", 10)
 	request("/video/getDetail", map[string]uint{"id": 10}, 200)
+	entityKey := cache.Key("video:entity:%d", 10)
+	if err := raw.Set(ctx, entityKey, `{"id":10,"likes_count":0}`, time.Minute).Err(); err != nil {
+		t.Fatal(err)
+	}
 	if ttl := raw.TTL(ctx, detailKey).Val(); ttl <= 0 || ttl > 60*time.Second {
 		t.Fatalf("detail TTL: %v", ttl)
 	}
@@ -243,6 +247,7 @@ func TestLikeCommandPipeline(t *testing.T) {
 		result := request("/video/getDetail", map[string]uint{"id": 10}, 200)
 		return string(result["likes_count"]) == "1"
 	})
+	wait("feed entity cache invalidated", func() bool { return raw.Exists(ctx, entityKey).Val() == 0 })
 	t.Log("registered/logged in -> HTTP 202 -> durable Outbox -> Relay -> MQ -> Batch -> isLiked=true, likes_count=1")
 
 	// Kill only this isolated command-consumer connection at the broker. A new
@@ -292,6 +297,26 @@ func TestLikeCommandPipeline(t *testing.T) {
 		}
 		return true
 	})
+	// The initial 5s socket deadline is a handshake bound, cleared by amqp091-go.
+	// Observe the same live connection after it, before injecting a real close.
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case <-time.After(6 * time.Second):
+	}
+	var live []struct {
+		ChannelDetails struct {
+			ConnectionName string `json:"connection_name"`
+		} `json:"channel_details"`
+	}
+	if err := json.Unmarshal(adminRequest("GET", "/api/consumers/"+url.PathEscape(uri.Vhost)), &live); err != nil || len(live) != 4 {
+		t.Fatalf("consumers after handshake deadline: %d %v", len(live), err)
+	}
+	for _, consumer := range live {
+		if consumer.ChannelDetails.ConnectionName != consumerConnection {
+			t.Fatal("healthy connection was unexpectedly replaced")
+		}
+	}
 	adminRequest("DELETE", "/api/connections/"+url.PathEscape(consumerConnection))
 	second := accept(10, "unlike-second", false, 202)
 	if string(second["revision"]) != `"2"` {
@@ -381,6 +406,12 @@ func TestLikeCommandPipeline(t *testing.T) {
 	if err = worker.NewLikeCommandBatchWorker(control, repo, rabbitmq.LikeCommandPartition(accountID, 10), failedCache).HandleBatch(ctx, []amqp.Delivery{delivery}); err != nil {
 		t.Fatal(err)
 	}
+	for _, readCache := range []*rediscache.Client{nil, failedCache} {
+		v, err := video.NewVideoService(video.NewVideoRepository(db), readCache, nil).GetDetail(ctx, 10)
+		if err != nil || v.LikesCount != 1 {
+			t.Fatalf("detail cache fallback: %+v %v", v, err)
+		}
+	}
 	if count() != 1 || state().AppliedRevision != 3 {
 		t.Fatal("Redis failure prevented commit")
 	}
@@ -424,5 +455,15 @@ func TestLikeCommandPipeline(t *testing.T) {
 	list, err = repo.ListLikedVideos(ctx, accountID)
 	if err != nil || len(list) != 2 || list[0].ID != 10 || list[1].ID != 11 {
 		t.Fatalf("updated_at ordering: %+v %v", list, err)
+	}
+	// A request ID remains authoritative even if a retry references a missing
+	// video, or its originally accepted video has since been deleted.
+	accept(999999, "like-first", true, 409)
+	if err := db.Delete(&video.Video{}, 11).Error; err != nil {
+		t.Fatal(err)
+	}
+	retryDeleted := accept(11, "order-0", true, 202)
+	if string(retryDeleted["revision"]) != `"1"` {
+		t.Fatal("retry of deleted video lost original revision")
 	}
 }

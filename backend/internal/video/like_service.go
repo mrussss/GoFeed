@@ -1,10 +1,6 @@
 package video
 
-import (
-	"context"
-
-	"gorm.io/gorm"
-)
+import "context"
 
 type LikeService struct {
 	repo      *LikeRepository
@@ -33,7 +29,11 @@ func (s *LikeService) AcceptLikeCommand(ctx context.Context, accountID uint, req
 			return nil, err
 		}
 		if !ok {
-			return nil, gorm.ErrRecordNotFound
+			// A deleted/missing video must not hide an already committed request
+			// identity. Let A1 return its original result or payload conflict.
+			if _, err := s.repo.FindLikeCommand(ctx, accountID, req.RequestID); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return s.repo.AcceptLikeCommand(ctx, accountID, req)

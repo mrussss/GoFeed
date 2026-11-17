@@ -10,7 +10,7 @@ type LikeItem = { id: number; is_liked: boolean; likes_count: number }
 type Pending = { intent: LikeCommand; beforeLiked: boolean; beforeCount: number; uncertain: boolean }
 type Saved = { pending?: Pending }
 const sending = reactive<Record<string, boolean>>({})
-const displays = reactive<Record<string, { liked: boolean; count: number; accepted?: boolean }>>({})
+const displays = reactive<Record<string, { liked: boolean; count: number; acceptedAt?: number }>>({})
 const storageKey = (accountId: number, videoId: number) => `gofeed:like-command:v1:${accountId}:${videoId}`
 
 function readSaved(key: string): Saved {
@@ -52,9 +52,11 @@ export function useLikeFollow(needLogin: () => void) {
         }
       } catch { /* new writes fail visibly if local persistence is unavailable */ }
     }
-    // Once a later read agrees with a resolved intent, resume displaying server
-    // counts. Unresolved operations must always retain their optimistic overlay.
-    if (fromRead && display?.accepted && item.is_liked === display.liked) {
+    // Accepted is not applied: briefly protect optimism, then let a fresh read
+    // restore authoritative state even if another command/device changed it.
+    // Unresolved requests do not expire and keep their original request_id.
+    if (fromRead && display?.acceptedAt !== undefined &&
+        (item.is_liked === display.liked || Date.now() - display.acceptedAt >= 60_000)) {
       delete displays[key]
       return item
     }
@@ -95,7 +97,7 @@ export function useLikeFollow(needLogin: () => void) {
       sent = true
       await likeApi.sendCommand(pending.intent, accountId)
       localStorage.removeItem(key)
-      displays[key]!.accepted = true
+      displays[key]!.acceptedAt = Date.now()
       if (auth.claims?.account_id === accountId) toast.info('命令已受理，点赞状态正在异步更新')
     } catch (e) {
       const definite = e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408
@@ -103,7 +105,7 @@ export function useLikeFollow(needLogin: () => void) {
         if (definite && !wasUncertain) {
           // Keep a rollback overlay while synchronous view watchers run; deleting
           // it first could rehydrate the still-persisted optimistic operation.
-          displays[key] = { liked: pending.beforeLiked, count: pending.beforeCount, accepted: true }
+          displays[key] = { liked: pending.beforeLiked, count: pending.beforeCount, acceptedAt: Date.now() }
           try { localStorage.removeItem(key) } catch { /* keep unresolved on disk */ }
           if (auth.claims?.account_id === accountId) protectLike(item)
         }

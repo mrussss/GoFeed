@@ -45,6 +45,9 @@ function likeItem() {
 }
 function protectDetail(fromRead = false) { const item = likeItem(); if (item) protectLike(item, fromRead) }
 
+// Keep the raw detail count until the separate isLiked read can reconcile it.
+let serverLikesCount = 0
+
 const muted = ref(true)
 const videoEl = ref<HTMLVideoElement | null>(null)
 
@@ -73,6 +76,7 @@ async function loadVideo() {
   try {
     const video = await videoApi.getDetail(requestedId)
     if (id.value !== requestedId || auth.claims?.account_id !== accountId) return
+    serverLikesCount = video.likes_count
     state.video = video
     protectDetail()
   } catch (e) {
@@ -94,8 +98,11 @@ async function loadIsLiked() {
   try {
     const res = await likeApi.isLiked(requestedId)
     if (id.value !== requestedId || auth.claims?.account_id !== accountId) return
-    state.isLiked = res.is_liked
-    protectDetail(true)
+    if (!state.video || state.video.id !== requestedId) return
+    const item = { id: requestedId, is_liked: res.is_liked, likes_count: serverLikesCount }
+    protectLike(item, true)
+    state.isLiked = item.is_liked
+    state.video.likes_count = item.likes_count
   } catch {
     if (id.value === requestedId && auth.claims?.account_id === accountId) {
       state.isLiked = null

@@ -112,6 +112,13 @@ var (
 	ErrLikeRevisionExhausted = errors.New("like revision exhausted")
 )
 
+// FindLikeCommand reads an already committed idempotency record.
+func (r *LikeRepository) FindLikeCommand(ctx context.Context, accountID uint, requestID string) (*CommandOutbox, error) {
+	var command CommandOutbox
+	err := r.db.WithContext(ctx).Where("account_id=? AND request_id=?", accountID, requestID).Take(&command).Error
+	return &command, err
+}
+
 // AcceptLikeCommand atomically allocates a server revision and stores intent.
 // It does not apply a like, change counts, or publish to RabbitMQ;
 // this method must commit before HTTP acceptance is returned.
