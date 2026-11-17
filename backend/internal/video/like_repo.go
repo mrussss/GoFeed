@@ -254,23 +254,13 @@ func (r *LikeRepository) ApplyLikeCommandBatch(ctx context.Context, events []rab
 		for _, id := range videos {
 			delta := deltas[id]
 			result := tx.Model(&Video{}).Where("id=? AND likes_count + ? >= 0", id, delta).UpdateColumns(map[string]any{
-				"likes_count": gorm.Expr("likes_count + ?", delta), "likes_version": gorm.Expr("likes_version + 1"),
+				"likes_count": gorm.Expr("likes_count + ?", delta),
 			})
 			if result.Error != nil {
 				return result.Error
 			}
 			if result.RowsAffected != 1 {
 				return fmt.Errorf("video %d missing or likes_count would become negative", id)
-			}
-			// The UPDATE holds the video row lock until COMMIT, so this is the exact
-			// version produced by our increment even with other partitions updating it.
-			var updated Video
-			if err := tx.Select("likes_version").First(&updated, id).Error; err != nil {
-				return err
-			}
-			dirty := VideoProjectionDirty{VideoID: id, Version: updated.LikesVersion}
-			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "video_id"}}, DoUpdates: clause.AssignmentColumns([]string{"version"})}).Create(&dirty).Error; err != nil {
-				return err
 			}
 		}
 		return nil

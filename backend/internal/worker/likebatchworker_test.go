@@ -88,7 +88,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sqlDB.Close()
-	// Seed an actual pre-B video table to check likes_version migration defaults.
+	// Migration must preserve historical video data without creating projection schema.
 	if err := db.Exec(`CREATE TABLE videos(id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,author_id BIGINT UNSIGNED NOT NULL,
  username VARCHAR(255) NOT NULL,title VARCHAR(255) NOT NULL,description VARCHAR(255),play_url VARCHAR(255) NOT NULL,
  cover_url VARCHAR(255) NOT NULL,create_time DATETIME(3),likes_count BIGINT NOT NULL DEFAULT 0,popularity BIGINT NOT NULL DEFAULT 0) ENGINE=InnoDB`).Error; err != nil {
@@ -101,12 +101,11 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	var legacy video.Video
-	if err := db.First(&legacy, 99).Error; err != nil || legacy.LikesVersion != 0 || legacy.LikesCount != 7 || legacy.Popularity != 17 {
+	if err := db.First(&legacy, 99).Error; err != nil || legacy.LikesCount != 7 || legacy.Popularity != 17 {
 		t.Fatalf("legacy video migration: %+v %v", legacy, err)
 	}
-	var columns int64
-	if err := db.Raw("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE table_schema=? AND table_name='video_projection_dirty'", schema).Scan(&columns).Error; err != nil || columns != 2 {
-		t.Fatalf("dirty columns: %d %v", columns, err)
+	if db.Migrator().HasColumn(&video.Video{}, "likes_version") || db.Migrator().HasTable("video_projection_dirty") {
+		t.Fatal("migration created obsolete projection schema")
 	}
 	ctx := context.Background()
 	repo := video.NewLikeRepository(db)
@@ -114,7 +113,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 	updatedAt := createdAt.Add(time.Hour)
 	reset := func(t *testing.T) {
 		t.Helper()
-		for _, table := range []string{"video_projection_dirty", "likes", "videos"} {
+		for _, table := range []string{"likes", "videos"} {
 			if err := db.Exec("DELETE FROM " + table).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -151,18 +150,6 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		}
 		return row
 	}
-	checkDirty := func(t *testing.T, id uint, version uint64) {
-		t.Helper()
-		var dirty video.VideoProjectionDirty
-		err := db.First(&dirty, id).Error
-		if version == 0 {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				t.Fatalf("unexpected dirty: %+v %v", dirty, err)
-			}
-		} else if err != nil || dirty.Version != version {
-			t.Fatalf("dirty: %+v err=%v want version=%d", dirty, err, version)
-		}
-	}
 	deliveries := func(t *testing.T, events []rabbitmq.LikeCommandEvent, acks *batchAckProbe) []amqp.Delivery {
 		t.Helper()
 		out := make([]amqp.Delivery, len(events))
@@ -184,15 +171,14 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		status   uint8
 		revision uint64
 		count    int64
-		version  uint64
 	}{
-		{"first_like", 0, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 1, true)}}, 1, 1, 1, 1},
-		{"unlike_keeps_row", 1, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 1, false)}}, 0, 1, 0, 1},
-		{"duplicates_and_old", 1, 3, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 3, true), event(1, 1, 2, false)}}, 1, 3, 1, 0},
-		{"same_target_advances_only_revision", 1, 1, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 3, true)}}, 1, 3, 1, 0},
-		{"highest_revision_in_batch", 0, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 3, true), event(1, 1, 1, true), event(1, 1, 2, false)}}, 1, 3, 1, 1},
-		{"coalesced_no_state_change", 0, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 1, true), event(1, 1, 2, false)}}, 0, 2, 0, 0},
-		{"old_batch_after_new", 0, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 3, true)}, {event(1, 1, 1, false)}}, 1, 3, 1, 1},
+		{"first_like", 0, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 1, true)}}, 1, 1, 1},
+		{"unlike_keeps_row", 1, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 1, false)}}, 0, 1, 0},
+		{"duplicates_and_old", 1, 3, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 3, true), event(1, 1, 2, false)}}, 1, 3, 1},
+		{"same_target_advances_only_revision", 1, 1, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 3, true)}}, 1, 3, 1},
+		{"highest_revision_in_batch", 0, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 3, true), event(1, 1, 1, true), event(1, 1, 2, false)}}, 1, 3, 1},
+		{"coalesced_no_state_change", 0, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 1, true), event(1, 1, 2, false)}}, 0, 2, 0},
+		{"old_batch_after_new", 0, 0, [][]rabbitmq.LikeCommandEvent{{event(1, 1, 3, true)}, {event(1, 1, 1, false)}}, 1, 3, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reset(t)
@@ -210,14 +196,13 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 				}
 			}
 			row, v := getLike(t, 1, 1), getVideo(t, 1)
-			if row.ID != before.ID || !row.CreatedAt.Equal(createdAt) || row.NextRevision != 10 || row.AppliedRevision != tc.revision || row.Status != tc.status || v.LikesCount != tc.count || v.LikesVersion != tc.version {
+			if row.ID != before.ID || !row.CreatedAt.Equal(createdAt) || row.NextRevision != 10 || row.AppliedRevision != tc.revision || row.Status != tc.status || v.LikesCount != tc.count {
 				t.Fatalf("state=%+v video=%+v", row, v)
 			}
 			changed := tc.initial != tc.status
 			if row.UpdatedAt.Equal(updatedAt) == changed {
 				t.Fatalf("updated_at changed=%v want=%v", !row.UpdatedAt.Equal(updatedAt), changed)
 			}
-			checkDirty(t, 1, tc.version)
 		})
 	}
 	t.Run("aggregate_by_video_and_net_zero", func(t *testing.T) {
@@ -244,15 +229,14 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantCount, wantVersion, wantUpdates := int64(2), uint64(1), int32(1)
+			wantCount, wantUpdates := int64(2), int32(1)
 			if netZero {
-				wantCount, wantVersion, wantUpdates = 1, 0, 0
+				wantCount, wantUpdates = 1, 0
 			}
 			v := getVideo(t, 1)
-			if v.LikesCount != wantCount || v.LikesVersion != wantVersion || updates.Load() != wantUpdates {
+			if v.LikesCount != wantCount || updates.Load() != wantUpdates {
 				t.Fatalf("aggregate: %+v updates=%d", v, updates.Load())
 			}
-			checkDirty(t, 1, wantVersion)
 		}
 	})
 	accounts := make([]uint, 4)
@@ -295,10 +279,10 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 				wantCount = 0
 			}
 			v := getVideo(t, 1)
-			if v.LikesCount != wantCount || v.LikesVersion != revision*4 {
+			if v.LikesCount != wantCount {
 				t.Fatalf("concurrent: %+v", v)
 			}
-			checkDirty(t, 1, v.LikesVersion)
+
 			var active int64
 			if err := db.Model(&video.Like{}).Where("video_id=1 AND status=1").Count(&active).Error; err != nil || active != v.LikesCount {
 				t.Fatalf("count differs from active relations: active=%d video=%d err=%v", active, v.LikesCount, err)
@@ -322,10 +306,10 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			account++
 		}
 		seedLike(t, account, 2, 0, 1, 0)
-		if err := db.Exec(`CREATE TRIGGER b_fail_dirty BEFORE INSERT ON video_projection_dirty FOR EACH ROW BEGIN IF NEW.video_id=2 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='B rollback injection'; END IF; END`).Error; err != nil {
+		if err := db.Exec(`CREATE TRIGGER b_fail_count BEFORE UPDATE ON videos FOR EACH ROW BEGIN IF NEW.id=2 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='B rollback injection'; END IF; END`).Error; err != nil {
 			t.Fatal(err)
 		}
-		defer db.Exec("DROP TRIGGER b_fail_dirty")
+		defer db.Exec("DROP TRIGGER b_fail_count")
 		acks := &batchAckProbe{}
 		err := worker.NewLikeCommandBatchWorker(nil, repo, partition).HandleBatch(ctx, deliveries(t, []rabbitmq.LikeCommandEvent{event(1, 1, 1, true), event(account, 2, 1, true)}, acks))
 		if err == nil || acks.calls != 0 {
@@ -334,10 +318,9 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		for _, pair := range [][2]uint{{1, 1}, {account, 2}} {
 			row := getLike(t, pair[0], pair[1])
 			v := getVideo(t, pair[1])
-			if row.Status != 0 || row.AppliedRevision != 0 || row.NextRevision != 1 || !row.UpdatedAt.Equal(updatedAt) || v.LikesCount != 0 || v.LikesVersion != 0 {
+			if row.Status != 0 || row.AppliedRevision != 0 || row.NextRevision != 1 || !row.UpdatedAt.Equal(updatedAt) || v.LikesCount != 0 {
 				t.Fatalf("partial commit: %+v %+v", row, v)
 			}
-			checkDirty(t, pair[1], 0)
 		}
 	})
 	t.Run("negative_count_is_error_not_clamp", func(t *testing.T) {
@@ -346,10 +329,9 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		seedLike(t, 1, 1, 1, 1, 0)
 		acks := &batchAckProbe{}
 		err := worker.NewLikeCommandBatchWorker(nil, repo, rabbitmq.LikeCommandPartition(1, 1)).HandleBatch(ctx, deliveries(t, []rabbitmq.LikeCommandEvent{event(1, 1, 1, false)}, acks))
-		if err == nil || acks.calls != 0 || getLike(t, 1, 1).AppliedRevision != 0 || getVideo(t, 1).LikesVersion != 0 {
+		if err == nil || acks.calls != 0 || getLike(t, 1, 1).AppliedRevision != 0 || getVideo(t, 1).LikesCount != 0 {
 			t.Fatalf("inconsistent count hidden: %v", err)
 		}
-		checkDirty(t, 1, 0)
 	})
 	t.Run("commit_before_ack_and_failed_ack_replay", func(t *testing.T) {
 		reset(t)
@@ -358,17 +340,13 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		acks := &batchAckProbe{failAt: 2, check: func() error {
 			var row video.Like
 			var v video.Video
-			var dirty video.VideoProjectionDirty
 			if err := db.Where("video_id=1 AND account_id=1").Take(&row).Error; err != nil {
 				return err
 			}
 			if err := db.First(&v, 1).Error; err != nil {
 				return err
 			}
-			if err := db.First(&dirty, 1).Error; err != nil {
-				return err
-			}
-			if row.AppliedRevision != 2 || v.LikesCount != 1 || v.LikesVersion != 1 || dirty.Version != 1 {
+			if row.AppliedRevision != 2 || v.LikesCount != 1 {
 				return errors.New("ACK preceded commit")
 			}
 			return nil
@@ -384,10 +362,9 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			t.Fatal(err)
 		}
 		after := getLike(t, 1, 1)
-		if replay.calls != 2 || getVideo(t, 1).LikesCount != 1 || getVideo(t, 1).LikesVersion != 1 || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		if replay.calls != 2 || getVideo(t, 1).LikesCount != 1 || !after.UpdatedAt.Equal(before.UpdatedAt) {
 			t.Fatal("committed replay changed state")
 		}
-		checkDirty(t, 1, 1)
 	})
 	t.Run("malformed_target_is_not_acked", func(t *testing.T) {
 		acks := &batchAckProbe{}
@@ -489,10 +466,10 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			cancel()
 			<-finished
 			v := getVideo(t, 1)
-			if v.LikesCount != 4 || v.LikesVersion != 4 {
+			if v.LikesCount != 4 {
 				t.Fatalf("four queues: %+v", v)
 			}
-			checkDirty(t, 1, 4)
+
 			for p := 0; p < 4; p++ {
 				if _, ok, err := control.Get(rabbitmq.LikeCommandQueue(p), true); err != nil || ok {
 					t.Fatalf("completed message was not ACKed: %v %v", ok, err)
@@ -512,7 +489,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			if err := publisher.Publish(ctx, e); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.Exec(`CREATE TRIGGER b_fail_dirty BEFORE INSERT ON video_projection_dirty FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='B rollback injection'`).Error; err != nil {
+			if err := db.Exec(`CREATE TRIGGER b_fail_count BEFORE UPDATE ON videos FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='B rollback injection'`).Error; err != nil {
 				t.Fatal(err)
 			}
 			ch, err := conn.Channel()
@@ -522,7 +499,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			if err := worker.NewLikeCommandBatchWorker(ch, repo, partition).Run(attemptCtx); err == nil {
 				t.Fatal("DB failure was not returned")
 			}
-			if err := db.Exec("DROP TRIGGER b_fail_dirty").Error; err != nil {
+			if err := db.Exec("DROP TRIGGER b_fail_count").Error; err != nil {
 				t.Fatal(err)
 			}
 			d, ok, err := control.Get(queue, false)
@@ -535,22 +512,21 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			if getLike(t, 1, 1).AppliedRevision != 0 || getVideo(t, 1).LikesCount != 0 {
 				t.Fatal("DB failure partly committed")
 			}
-			checkDirty(t, 1, 0)
 
 			ch, err = conn.Channel()
 			if err != nil {
 				t.Fatal(err)
 			}
 			var closed atomic.Bool
-			if err := db.Callback().Create().After("gorm:create").Register("b_close_before_commit", func(tx *gorm.DB) {
-				if tx.Statement.Table == "video_projection_dirty" && closed.CompareAndSwap(false, true) {
+			if err := db.Callback().Update().After("gorm:update").Register("b_close_before_commit", func(tx *gorm.DB) {
+				if tx.Statement.Table == "videos" && closed.CompareAndSwap(false, true) {
 					_ = ch.Close()
 				}
 			}); err != nil {
 				t.Fatal(err)
 			}
 			runErr := worker.NewLikeCommandBatchWorker(ch, repo, partition).Run(attemptCtx)
-			db.Callback().Create().Remove("b_close_before_commit")
+			db.Callback().Update().Remove("b_close_before_commit")
 			if runErr == nil || !strings.Contains(runErr.Error(), "ACK failed") {
 				t.Fatalf("expected committed ACK failure: %v", runErr)
 			}
@@ -558,7 +534,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			if before.AppliedRevision != 1 || getVideo(t, 1).LikesCount != 1 {
 				t.Fatal("transaction did not commit after channel close")
 			}
-			checkDirty(t, 1, 1)
+
 			d, ok, err = control.Get(queue, false)
 			if err != nil || !ok || !d.Redelivered {
 				t.Fatalf("ACK failure lost message: %v %v", ok, err)
@@ -578,10 +554,44 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			if _, ok, err := control.Get(queue, true); err != nil || ok {
 				t.Fatalf("replayed command not ACKed: %v %v", ok, err)
 			}
-			if getVideo(t, 1).LikesCount != 1 || getVideo(t, 1).LikesVersion != 1 || !getLike(t, 1, 1).UpdatedAt.Equal(before.UpdatedAt) {
+			if getVideo(t, 1).LikesCount != 1 || !getLike(t, 1, 1).UpdatedAt.Equal(before.UpdatedAt) {
 				t.Fatal("ACK failure replay changed committed state")
 			}
-			checkDirty(t, 1, 1)
 		})
 	})
+	t.Run("migration_retains_obsolete_schema", func(t *testing.T) {
+		// Only this disposable test database gets legacy projection schema.
+		reset(t)
+		for _, sql := range []string{
+			"ALTER TABLE videos ADD COLUMN likes_version BIGINT UNSIGNED NOT NULL DEFAULT 0",
+			"CREATE TABLE video_projection_dirty(video_id BIGINT UNSIGNED PRIMARY KEY,version BIGINT UNSIGNED NOT NULL)",
+			"INSERT INTO video_projection_dirty VALUES(1,9)",
+		} {
+			if err := db.Exec(sql).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := appdb.AutoMigrate(db); err != nil {
+			t.Fatal(err)
+		}
+		if !db.Migrator().HasColumn(&video.Video{}, "likes_version") || !db.Migrator().HasTable("video_projection_dirty") {
+			t.Fatal("migration removed legacy projection schema")
+		}
+		seedVideo(t, 1, 0)
+		seedLike(t, 1, 1, 0, 1, 0)
+		if err := repo.ApplyLikeCommandBatch(ctx, []rabbitmq.LikeCommandEvent{event(1, 1, 1, true)}); err != nil {
+			t.Fatal(err)
+		}
+		var legacyVersion, dirtyVersion uint64
+		if err := db.Raw("SELECT likes_version FROM videos WHERE id=1").Scan(&legacyVersion).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Raw("SELECT version FROM video_projection_dirty WHERE video_id=1").Scan(&dirtyVersion).Error; err != nil {
+			t.Fatal(err)
+		}
+		if getVideo(t, 1).LikesCount != 1 || legacyVersion != 0 || dirtyVersion != 9 {
+			t.Fatal("batch changed legacy projection data or failed to update count")
+		}
+	})
+
 }
