@@ -88,18 +88,15 @@ func (w *LikeWorker) process(ctx context.Context, body []byte) error {
 		// 解析事件失败，直接丢弃
 		return nil
 	}
-	if evt.UserID == 0 || evt.VideoID == 0 {
+	if evt.Validate() != nil {
 		return nil
 	}
 
-	switch evt.Action {
-	case "like":
+	// Phase 1 consumes v2 only; revision ordering and Inbox are Phase 2.
+	if evt.DesiredLiked {
 		return w.applyLike(ctx, evt.UserID, evt.VideoID)
-	case "unlike":
-		return w.applyUnlike(ctx, evt.UserID, evt.VideoID)
-	default:
-		return nil
 	}
+	return w.applyUnlike(ctx, evt.UserID, evt.VideoID)
 }
 
 func (w *LikeWorker) applyLike(ctx context.Context, userID, videoID uint) error {

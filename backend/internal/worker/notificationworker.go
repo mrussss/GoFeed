@@ -105,7 +105,7 @@ func (w *NotificationWorker) process(ctx context.Context, d amqp.Delivery) error
 		if err := json.Unmarshal(body, &evt); err != nil {
 			return nil
 		}
-		if evt.UserID == 0 || evt.VideoID == 0 {
+		if evt.Validate() != nil || !evt.DesiredLiked {
 			return nil
 		}
 		var authorID uint

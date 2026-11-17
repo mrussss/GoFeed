@@ -1,13 +1,15 @@
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ApiError } from '../api/client'
 import * as feedApi from '../api/feed'
 import type { FeedVideoItem } from '../api/types'
 import { useAuthStore } from '../stores/auth'
+import { useLikeFollow } from './useLikeFollow'
 
 export type TabKey = 'recommend' | 'hot' | 'following'
 
 export function useVideoFeed() {
   const auth = useAuthStore()
+  const { protectLike } = useLikeFollow(() => {})
   const tab = ref<TabKey>('recommend')
 
   const recommend = reactive({
@@ -40,8 +42,11 @@ export function useVideoFeed() {
     if (recommend.loading) return
     recommend.loading = true
     recommend.error = ''
+    const accountId = auth.claims?.account_id
     try {
       const res = await feedApi.listLatest({ limit: 10, latest_time: reset ? 0 : recommend.nextTime })
+      if (auth.claims?.account_id !== accountId) return
+      res.video_list.forEach(item => protectLike(item, true))
       recommend.hasMore = res.has_more
       recommend.nextTime = res.next_time
       recommend.items = reset ? res.video_list : recommend.items.concat(res.video_list)
@@ -49,6 +54,7 @@ export function useVideoFeed() {
       recommend.error = e instanceof ApiError ? e.message : String(e)
     } finally {
       recommend.loading = false
+      if (auth.claims?.account_id !== accountId) void ensureTabLoaded()
     }
   }
 
@@ -56,12 +62,15 @@ export function useVideoFeed() {
     if (hot.loading) return
     hot.loading = true
     hot.error = ''
+    const accountId = auth.claims?.account_id
     try {
       const res = await feedApi.listLikesCount({
         limit: 10,
         likes_count_before: reset ? undefined : hot.nextLikesCountBefore,
         id_before: reset ? undefined : hot.nextIdBefore,
       })
+      if (auth.claims?.account_id !== accountId) return
+      res.video_list.forEach(item => protectLike(item, true))
       hot.hasMore = res.has_more
       hot.nextLikesCountBefore = res.next_likes_count_before
       hot.nextIdBefore = res.next_id_before
@@ -70,6 +79,7 @@ export function useVideoFeed() {
       hot.error = e instanceof ApiError ? e.message : String(e)
     } finally {
       hot.loading = false
+      if (auth.claims?.account_id !== accountId) void ensureTabLoaded()
     }
   }
 
@@ -81,8 +91,11 @@ export function useVideoFeed() {
     if (following.loading) return
     following.loading = true
     following.error = ''
+    const accountId = auth.claims?.account_id
     try {
       const res = await feedApi.listByFollowing({ limit: 10, latest_time: reset ? 0 : following.nextTime })
+      if (auth.claims?.account_id !== accountId) return
+      res.video_list.forEach(item => protectLike(item, true))
       following.hasMore = res.has_more
       following.nextTime = res.next_time
       following.items = reset ? res.video_list : following.items.concat(res.video_list)
@@ -90,6 +103,7 @@ export function useVideoFeed() {
       following.error = e instanceof ApiError ? e.message : String(e)
     } finally {
       following.loading = false
+      if (auth.claims?.account_id !== accountId) void ensureTabLoaded()
     }
   }
 
@@ -107,6 +121,11 @@ export function useVideoFeed() {
     if (tab.value === 'hot' && hot.hasMore) await loadHot(false)
     if (tab.value === 'following' && following.hasMore) await loadFollowing(false)
   }
+
+  watch(() => auth.claims?.account_id, () => {
+    recommend.items = []; hot.items = []; following.items = []
+    void ensureTabLoaded()
+  })
 
   return { tab, recommend, hot, following, currentState, loadRecommend, loadHot, loadFollowing, ensureTabLoaded, loadMoreIfNeeded }
 }

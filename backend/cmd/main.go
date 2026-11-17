@@ -90,7 +90,9 @@ func main() {
 	}
 
 	// 设置路由
-	r := apphttp.SetRouter(sqlDB, cache, rmq)
+	likeMQ := rabbitmq.NewLikeMQ(cfg.RabbitMQ)
+	defer likeMQ.Close()
+	r := apphttp.SetRouter(sqlDB, cache, rmq, likeMQ)
 	log.Printf("Server is running on port %d", cfg.Server.Port)
 	if err := r.Run(":" + strconv.Itoa(cfg.Server.Port)); err != nil {
 		log.Fatalf("Failed to run server: %v", err)

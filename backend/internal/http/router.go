@@ -19,7 +19,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *gin.Engine {
+func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ, likeMQ *rabbitmq.LikeMQ) *gin.Engine {
 	r := gin.Default()
 	if err := r.SetTrustedProxies(nil); err != nil {
 		log.Printf("SetTrustedProxies failed: %v", err)
@@ -84,13 +84,8 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 		protectedVideoGroup.POST("/chunk/complete", chunkHandler.CompleteChunkUpload)
 	}
 	// like
-	likeMQ, err := rabbitmq.NewLikeMQ(rmq)
-	if err != nil {
-		log.Printf("LikeMQ init failed (mq disabled): %v", err)
-		likeMQ = nil
-	}
 	likeRepository := video.NewLikeRepository(db)
-	likeService := video.NewLikeService(likeRepository, videoRepository, cache, likeMQ, popularityMQ)
+	likeService := video.NewLikeService(likeRepository, videoRepository, likeMQ, popularityMQ)
 	likeHandler := video.NewLikeHandler(likeService)
 	likeGroup := r.Group("/like")
 	protectedLikeGroup := likeGroup.Group("")

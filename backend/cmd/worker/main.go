@@ -13,12 +13,11 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/joho/godotenv"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"gorm.io/gorm"
 )
 
@@ -134,7 +133,7 @@ func main() {
 		}
 	}
 	// 连接 RabbitMQ（带重试）
-	url := "amqp://" + cfg.RabbitMQ.Username + ":" + cfg.RabbitMQ.Password + "@" + cfg.RabbitMQ.Host + ":" + strconv.Itoa(cfg.RabbitMQ.Port) + "/"
+	url := mqrabbit.ConnectionURL(cfg.RabbitMQ)
 	var conn *amqp.Connection
 	connectWithRetry("RabbitMQ", 10, func() error {
 		var err error

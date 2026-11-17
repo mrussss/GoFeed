@@ -8,6 +8,8 @@ import (
 	"errors"
 	"feedsystem_video_go/internal/config"
 	"log"
+	"net"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -23,12 +25,21 @@ func NewRabbitMQ(cfg *config.RabbitMQConfig) (*RabbitMQ, error) {
 	if cfg == nil {
 		return nil, errors.New("rabbitmq config is nil")
 	}
-	url := "amqp://" + cfg.Username + ":" + cfg.Password + "@" + cfg.Host + ":" + strconv.Itoa(cfg.Port) + "/"
-	conn, err := amqp.Dial(url)
+	conn, err := amqp.Dial(ConnectionURL(*cfg))
 	if err != nil {
 		return nil, err
 	}
 	return &RabbitMQ{Conn: conn}, nil
+}
+
+// ConnectionURL also supports an isolated vhost for local integration checks.
+func ConnectionURL(cfg config.RabbitMQConfig) string {
+	vhost := cfg.VHost
+	if vhost == "" {
+		vhost = "/"
+	}
+	u := url.URL{Scheme: "amqp", Host: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)), User: url.UserPassword(cfg.Username, cfg.Password), Path: "/" + vhost}
+	return u.String()
 }
 
 func (r *RabbitMQ) Close() error {

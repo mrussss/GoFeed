@@ -25,6 +25,7 @@ async function tryRefresh(): Promise<string | null> {
   if (!auth.refreshToken) return null
   if (isRefreshing) return refreshPromise
   isRefreshing = true
+  const refreshAccountToken = auth.token
   refreshPromise = (async () => {
     try {
       const res = await fetch(`${API_BASE}/account/refresh`, {
@@ -32,12 +33,13 @@ async function tryRefresh(): Promise<string | null> {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: auth.refreshToken }),
       })
-      if (!res.ok) { auth.clearTokens(); return null }
+      if (!res.ok) { if (auth.token === refreshAccountToken) auth.clearTokens(); return null }
       const data = await res.json()
+      if (auth.token !== refreshAccountToken) return null
       auth.setToken(data.token)
       return data.token as string
     } catch {
-      auth.clearTokens()
+      if (auth.token === refreshAccountToken) auth.clearTokens()
       return null
     } finally {
       isRefreshing = false
@@ -46,7 +48,7 @@ async function tryRefresh(): Promise<string | null> {
   return refreshPromise
 }
 
-export async function postJson<T>(path: string, body: unknown, options?: { authRequired?: boolean }): Promise<T> {
+export async function postJson<T>(path: string, body: unknown, options?: { authRequired?: boolean; timeoutMs?: number; expectedAccountId?: number }): Promise<T> {
   const auth = useAuthStore()
   const token = auth.token
 
@@ -54,27 +56,47 @@ export async function postJson<T>(path: string, body: unknown, options?: { authR
     throw new ApiError('需要先登录（缺少 token）', 401)
   }
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (token) headers.Authorization = `Bearer ${token}`
-
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body ?? {}),
-  })
-
-  if (res.status === 401 && path !== '/account/refresh') {
-    const newToken = await tryRefresh()
-    if (newToken) {
-      headers.Authorization = `Bearer ${newToken}`
-      const retryRes = await fetch(`${API_BASE}${path}`, {
-        method: 'POST', headers, body: JSON.stringify(body ?? {}),
-      })
-      return handleResponse<T>(retryRes, path)
+  const ensureAccount = () => {
+    if (options?.expectedAccountId && auth.claims?.account_id !== options.expectedAccountId) {
+      throw new ApiError('登录账号已切换，请在原账号重试', 401)
     }
   }
+  ensureAccount()
+  const controller = new AbortController()
+  const timer = options?.timeoutMs ? window.setTimeout(() => controller.abort(), options.timeoutMs) : undefined
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (token) headers.Authorization = `Bearer ${token}`
 
-  return handleResponse<T>(res, path)
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers,
+      signal: controller.signal,
+      body: JSON.stringify(body ?? {}),
+    })
+
+    if (options?.expectedAccountId && auth.claims?.account_id !== options.expectedAccountId) {
+      throw new ApiError('原账号操作接收结果未知', 0, { status: 'unknown' })
+    }
+    if (res.status === 401 && path !== '/account/refresh') {
+      const newToken = await tryRefresh()
+      if (newToken) {
+        ensureAccount()
+        headers.Authorization = `Bearer ${newToken}`
+        const retryRes = await fetch(`${API_BASE}${path}`, {
+          method: 'POST', headers, signal: controller.signal, body: JSON.stringify(body ?? {}),
+        })
+        if (options?.expectedAccountId && auth.claims?.account_id !== options.expectedAccountId) {
+          throw new ApiError('原账号操作接收结果未知', 0, { status: 'unknown' })
+        }
+        return await handleResponse<T>(retryRes, path, options?.expectedAccountId)
+      }
+    }
+
+    return await handleResponse<T>(res, path, options?.expectedAccountId)
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer)
+  }
 }
 
 export async function postForm<T>(path: string, body: FormData, options?: { authRequired?: boolean }): Promise<T> {
@@ -108,9 +130,12 @@ export async function postForm<T>(path: string, body: FormData, options?: { auth
   return handleResponse<T>(res, path)
 }
 
-async function handleResponse<T>(res: Response, path: string): Promise<T> {
+async function handleResponse<T>(res: Response, path: string, expectedAccountId?: number): Promise<T> {
   const auth = useAuthStore()
   const text = await res.text()
+  if (expectedAccountId && auth.claims?.account_id !== expectedAccountId) {
+    throw new ApiError('原账号操作接收结果未知', 0, { status: 'unknown' })
+  }
   let data: unknown = null
   if (text) {
     try { data = JSON.parse(text) } catch { data = text }

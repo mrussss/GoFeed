@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive } from 'vue'
+import { computed, onMounted, reactive, watch } from 'vue'
 
 import { ApiError } from '../api/client'
 import * as feedApi from '../api/feed'
-import * as likeApi from '../api/like'
+import { useLikeFollow } from '../composables/useLikeFollow'
 import type { FeedVideoItem } from '../api/types'
 import AppShell from '../components/AppShell.vue'
 import FeedVideoCard from '../components/FeedVideoCard.vue'
@@ -25,18 +25,23 @@ const state = reactive({
   nextOffset: 0,
 })
 
-const likeBusy = reactive<Record<string, boolean>>({})
+const { likeBusy, toggleLike, protectLike } = useLikeFollow(() => toast.error('请先登录'))
+watch(() => state.items, items => items.forEach(item => protectLike(item)), { deep: true, flush: 'sync' })
+watch(() => auth.claims?.account_id, () => { state.items = []; void loadHot(true) })
 
 async function loadHot(reset: boolean) {
   if (state.loading) return
   state.loading = true
   state.error = ''
+  const accountId = auth.claims?.account_id
   try {
     const res = await feedApi.listByPopularity({
       limit: state.limit,
       as_of: reset ? 0 : state.asOf,
       offset: reset ? 0 : state.nextOffset,
     })
+    if (auth.claims?.account_id !== accountId) return
+    res.video_list.forEach(item => protectLike(item, true))
     state.hasMore = res.has_more
     state.asOf = res.as_of
     state.nextOffset = res.next_offset
@@ -45,27 +50,7 @@ async function loadHot(reset: boolean) {
     state.error = e instanceof ApiError ? e.message : String(e)
   } finally {
     state.loading = false
-  }
-}
-
-async function toggleLike(item: FeedVideoItem) {
-  if (!auth.isLoggedIn) {
-    toast.error('请先登录')
-    return
-  }
-  const key = String(item.id)
-  if (likeBusy[key]) return
-  likeBusy[key] = true
-  try {
-    if (item.is_liked) await likeApi.unlike(item.id)
-    else await likeApi.like(item.id)
-    item.is_liked = !item.is_liked
-    item.likes_count = Math.max(0, item.likes_count + (item.is_liked ? 1 : -1))
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : String(e)
-    toast.error(msg)
-  } finally {
-    likeBusy[key] = false
+    if (auth.claims?.account_id !== accountId) void loadHot(true)
   }
 }
 
