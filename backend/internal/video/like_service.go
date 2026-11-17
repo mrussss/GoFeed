@@ -70,3 +70,9 @@ func (s *LikeService) IsLiked(ctx context.Context, videoID, accountID uint) (boo
 func (s *LikeService) ListLikedVideos(ctx context.Context, accountID uint) ([]Video, error) {
 	return s.repo.ListLikedVideos(ctx, accountID)
 }
+
+// AcceptLikeCommand is the independent A1 entry point. Accept continues to
+// use the Phase 1 publisher until A2 explicitly switches the HTTP contract.
+func (s *LikeService) AcceptLikeCommand(ctx context.Context, accountID uint, req LikeCommandRequest) (*CommandOutbox, error) {
+	return s.repo.AcceptLikeCommand(ctx, accountID, req)
+}
