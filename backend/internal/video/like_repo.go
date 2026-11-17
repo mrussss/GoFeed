@@ -3,6 +3,9 @@ package video
 import (
 	"context"
 	"errors"
+	"feedsystem_video_go/internal/middleware/rabbitmq"
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -178,4 +181,98 @@ func (r *LikeRepository) AcceptLikeCommand(ctx context.Context, accountID uint, 
 		return nil, ErrLikeCommandConflict
 	}
 	return &original, nil
+}
+
+// ApplyLikeCommandBatch applies latest target states, not individual +/-1 events.
+// It never creates/deletes relations or changes the A1 allocation watermark.
+func (r *LikeRepository) ApplyLikeCommandBatch(ctx context.Context, events []rabbitmq.LikeCommandEvent) error {
+	type pair struct{ videoID, accountID uint }
+	latest := make(map[pair]rabbitmq.LikeCommandEvent, len(events))
+	for _, event := range events {
+		if err := event.Validate(); err != nil {
+			return err
+		}
+		key := pair{event.VideoID, event.AccountID}
+		previous, exists := latest[key]
+		if exists && event.Revision == previous.Revision && event.DesiredLiked != previous.DesiredLiked {
+			return fmt.Errorf("conflicting targets for video %d account %d revision %d", event.VideoID, event.AccountID, event.Revision)
+		}
+		if !exists || event.Revision > previous.Revision {
+			latest[key] = event
+		}
+	}
+	if len(latest) == 0 {
+		return nil
+	}
+	keys := make([]pair, 0, len(latest))
+	for key := range latest {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].videoID != keys[j].videoID {
+			return keys[i].videoID < keys[j].videoID
+		}
+		return keys[i].accountID < keys[j].accountID
+	})
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		deltas := make(map[uint]int64)
+		now := time.Now().UTC()
+		for _, key := range keys {
+			var state Like
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("video_id=? AND account_id=?", key.videoID, key.accountID).Take(&state).Error; err != nil {
+				return err
+			}
+			event := latest[key]
+			if event.Revision <= state.AppliedRevision {
+				continue
+			}
+			if event.Revision > state.NextRevision || state.Status > 1 {
+				return fmt.Errorf("invalid stored state or unallocated revision: video %d account %d", key.videoID, key.accountID)
+			}
+			status := uint8(0)
+			if event.DesiredLiked {
+				status = 1
+			}
+			changes := map[string]any{"status": status, "applied_revision": event.Revision}
+			if status != state.Status {
+				changes["updated_at"] = now
+				deltas[key.videoID] += int64(status) - int64(state.Status)
+			}
+			// UpdateColumns deliberately bypasses GORM's automatic UpdatedAt change:
+			// true->true/false->false must advance revision without changing that time.
+			if err := tx.Model(&Like{}).Where("id=?", state.ID).UpdateColumns(changes).Error; err != nil {
+				return err
+			}
+		}
+		videos := make([]uint, 0, len(deltas))
+		for id, delta := range deltas {
+			if delta != 0 {
+				videos = append(videos, id)
+			}
+		}
+		sort.Slice(videos, func(i, j int) bool { return videos[i] < videos[j] })
+		for _, id := range videos {
+			delta := deltas[id]
+			result := tx.Model(&Video{}).Where("id=? AND likes_count + ? >= 0", id, delta).UpdateColumns(map[string]any{
+				"likes_count": gorm.Expr("likes_count + ?", delta), "likes_version": gorm.Expr("likes_version + 1"),
+			})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("video %d missing or likes_count would become negative", id)
+			}
+			// The UPDATE holds the video row lock until COMMIT, so this is the exact
+			// version produced by our increment even with other partitions updating it.
+			var updated Video
+			if err := tx.Select("likes_version").First(&updated, id).Error; err != nil {
+				return err
+			}
+			dirty := VideoProjectionDirty{VideoID: id, Version: updated.LikesVersion}
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "video_id"}}, DoUpdates: clause.AssignmentColumns([]string{"version"})}).Create(&dirty).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

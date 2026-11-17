@@ -29,6 +29,13 @@ type LikeCommandEvent struct {
 	Revision     uint64 `json:"revision,string"`
 }
 
+func (event LikeCommandEvent) Validate() error {
+	if event.CommandID == 0 || event.RequestID == "" || event.AccountID == 0 || event.VideoID == 0 || event.Revision == 0 {
+		return errors.New("invalid like command event")
+	}
+	return nil
+}
+
 // LikeCommandPartition is the fixed routing contract for the later consumer:
 // FNV-1a 64 over two big-endian uint64 values (account, video), modulo four.
 func LikeCommandPartition(accountID, videoID uint) int {
@@ -74,8 +81,8 @@ func NewLikeCommandMQ(cfg config.RabbitMQConfig) *LikeCommandMQ {
 func (m *LikeCommandMQ) Close() { m.publisher.Close() }
 
 func (m *LikeCommandMQ) Publish(ctx context.Context, event LikeCommandEvent) error {
-	if event.CommandID == 0 || event.RequestID == "" || event.AccountID == 0 || event.VideoID == 0 || event.Revision == 0 {
-		return errors.New("invalid like command event")
+	if err := event.Validate(); err != nil {
+		return err
 	}
 	p := m.publisher
 	select {
