@@ -18,96 +18,30 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-type ingressPublisher func(context.Context, rabbitmq.LikeEvent) (bool, error)
-
-func (f ingressPublisher) Publish(ctx context.Context, e rabbitmq.LikeEvent) (bool, error) {
-	return f(ctx, e)
-}
-
 func ingressEvent() rabbitmq.LikeEvent {
 	return rabbitmq.LikeEvent{SchemaVersion: 2, EventID: "00112233445566778899aabbccddeeff", UserID: 7, VideoID: 9, Revision: "12", DesiredLiked: true, OccurredAt: time.Date(2026, 11, 16, 1, 2, 3, 0, time.UTC)}
 }
-func ingressRouter(p LikePublisher) *gin.Engine {
-	r := gin.New()
-	r.Use(func(c *gin.Context) { c.Set("accountID", uint(7)) })
-	h := NewLikeHandler(NewLikeService(nil, nil, p, nil)) // any fallback/read would fail with these nil repositories
-	r.POST("/like/like", h.Like)
-	r.POST("/like/unlike", h.Unlike)
-	return r
-}
-func ingressRequest(t *testing.T, r *gin.Engine, e rabbitmq.LikeEvent) *httptest.ResponseRecorder {
-	t.Helper()
-	body, _ := json.Marshal(LikeIntentRequest{SchemaVersion: e.SchemaVersion, EventID: e.EventID, VideoID: e.VideoID, Revision: e.Revision, DesiredLiked: &e.DesiredLiked, OccurredAt: e.OccurredAt})
-	path := "/like/like"
-	if !e.DesiredLiked {
-		path = "/like/unlike"
-	}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", path, strings.NewReader(string(body)))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(rec, req)
-	return rec
-}
 
-// Existing tests cover uploads/rate limiting, not the asynchronous acceptance
-// contract. Keep API failure gates and the optional real broker check together.
+// The former publisher-based HTTP acceptance tests now check the command contract.
+// Successful durable acceptance is exercised with real MySQL in the C suite.
 func TestLikeIngressAcceptance(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, tc := range []struct {
-		code    string
-		unknown bool
-		http    int
-		status  string
-	}{
-		{"", false, 202, "accepted"}, {"broker_nack", false, 503, "rejected"},
-		{"unroutable", false, 503, "rejected"}, {"confirm_timeout", true, 504, "unknown"},
-		{"connection_lost", true, 503, "unknown"}, {"publisher_busy", false, 503, "rejected"},
-		{"event_payload_conflict", false, 409, "rejected"},
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("accountID", uint(7)) })
+	h := NewLikeHandler(NewLikeService(nil, nil))
+	r.POST("/like/like", h.Like)
+	for _, body := range []string{
+		`{"user_id":999}`, `{"account_id":999}`, `{"video_id":1,"request_id":"x","revision":"1","desired_liked":true}`,
+		`{"video_id":1,"request_id":"x","desired_liked":false}`, `{"video_id":1,"request_id":"x"}`,
+		`{"video_id":1,"request_id":"","desired_liked":true}`, `{"video_id":0,"request_id":"x","desired_liked":true}`,
+		`{"video_id":1,"request_id":"x","desired_liked":true} {}`,
 	} {
-		t.Run(tc.status+"/"+tc.code, func(t *testing.T) {
-			r := ingressRouter(ingressPublisher(func(_ context.Context, e rabbitmq.LikeEvent) (bool, error) {
-				if e != ingressEvent() {
-					t.Errorf("HTTP envelope changed: %+v", e)
-				}
-				if tc.code != "" {
-					return false, &rabbitmq.PublishError{Code: tc.code, Unknown: tc.unknown}
-				}
-				return true, nil
-			}))
-			rec := ingressRequest(t, r, ingressEvent())
-			var result map[string]any
-			_ = json.Unmarshal(rec.Body.Bytes(), &result)
-			if rec.Code != tc.http || result["status"] != tc.status || result["event_id"] != ingressEvent().EventID {
-				t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
-			}
-		})
-	}
-	t.Run("wait_for_publisher", func(t *testing.T) {
-		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan *httptest.ResponseRecorder, 1)
-		r := ingressRouter(ingressPublisher(func(context.Context, rabbitmq.LikeEvent) (bool, error) { close(entered); <-release; return true, nil }))
-		go func() { done <- ingressRequest(t, r, ingressEvent()) }()
-		<-entered
-		select {
-		case <-done:
-			t.Fatal("returned before confirm")
-		default:
-		}
-		close(release)
-		if rec := <-done; rec.Code != 202 {
-			t.Fatal(rec.Body.String())
-		}
-	})
-	t.Run("client_user_id_rejected", func(t *testing.T) {
-		r := ingressRouter(ingressPublisher(func(context.Context, rabbitmq.LikeEvent) (bool, error) {
-			t.Error("must not publish")
-			return false, nil
-		}))
 		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, httptest.NewRequest("POST", "/like/like", strings.NewReader(`{"user_id":999}`)))
+		r.ServeHTTP(rec, httptest.NewRequest("POST", "/like/like", strings.NewReader(body)))
 		if rec.Code != 400 {
-			t.Fatal(rec.Code)
+			t.Fatalf("invalid command returned %d: %s", rec.Code, body)
 		}
-	})
+	}
 }
 
 // A cancelled call performs no network I/O. A tiny receipt limit reproduces
@@ -151,18 +85,9 @@ func TestLikeIngressRealRabbitMQ(t *testing.T) {
 	defer ch.Close()
 	publisher := rabbitmq.NewLikeMQ(cfg)
 	defer publisher.Close()
-	heat, err := rabbitmq.NewPopularityMQ(&rabbitmq.RabbitMQ{Conn: conn})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := gin.New()
-	r.Use(func(c *gin.Context) { c.Set("accountID", uint(7)) })
-	handler := NewLikeHandler(NewLikeService(nil, nil, publisher, heat))
-	r.POST("/like/like", handler.Like)
-	r.POST("/like/unlike", handler.Unlike)
 	evt := ingressEvent()
-	if rec := ingressRequest(t, r, evt); rec.Code != 202 {
-		t.Fatalf("real confirm: %d %s", rec.Code, rec.Body.String())
+	if _, err := publisher.Publish(context.Background(), evt); err != nil {
+		t.Fatal(err)
 	}
 	d, ok, err := ch.Get("like.events", true)
 	if err != nil || !ok || d.MessageId != evt.EventID || d.DeliveryMode != amqp.Persistent {
@@ -172,62 +97,42 @@ func TestLikeIngressRealRabbitMQ(t *testing.T) {
 	if err = json.Unmarshal(d.Body, &got); err != nil || got != evt {
 		t.Fatalf("event changed: %+v %v", got, err)
 	}
-	if _, ok, err := ch.Get("notification.like", true); err != nil || !ok {
-		t.Fatalf("first notification delivery: %v", err)
-	}
-	// Transitional heat publishing does not use Confirm; allow broker processing
-	// on its separate channel before checking the first delivery.
-	for deadline := time.Now().Add(time.Second); ; {
-		_, ok, err := ch.Get("video.popularity.events", true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("first heat delivery missing")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 	for i := 0; i < 2; i++ {
-		if rec := ingressRequest(t, r, evt); rec.Code != 202 {
-			t.Fatalf("confirmed retry: %d %s", rec.Code, rec.Body.String())
+		if newly, err := publisher.Publish(context.Background(), evt); err != nil || newly {
+			t.Fatalf("confirmed retry: %v %v", newly, err)
 		}
 	}
-	for _, queue := range []string{"like.events", "notification.like", "video.popularity.events"} {
-		if _, ok, err := ch.Get(queue, true); err != nil || ok {
-			t.Fatalf("confirmed retry duplicated delivery to %s: present=%v err=%v", queue, ok, err)
-		}
+	if _, ok, err := ch.Get("like.events", true); err != nil || ok {
+		t.Fatalf("retry duplicated event: %v %v", ok, err)
 	}
 	// Confirms also ACK unroutable messages. Remove the only unlike binding and
-	// verify that a real basic.return + ACK cannot become HTTP 202.
+	// verify that a real basic.return + ACK cannot become a confirmed publish.
 	if err = ch.QueueUnbind("like.events", "like.*", "like.events", nil); err != nil {
 		t.Fatal(err)
 	}
 	evt.EventID = "11112233445566778899aabbccddeeff"
 	evt.DesiredLiked = false
-	if rec := ingressRequest(t, r, evt); rec.Code != 503 || !strings.Contains(rec.Body.String(), "unroutable") {
-		t.Fatalf("real return: %d %s", rec.Code, rec.Body.String())
+	if _, err := publisher.Publish(context.Background(), evt); err == nil || !strings.Contains(err.Error(), "unroutable") {
+		t.Fatalf("real return: %v", err)
 	}
-	// Failure closed the old connection; retry restores topology + confirms.
-	if rec := ingressRequest(t, r, evt); rec.Code != 202 {
-		t.Fatalf("reconnect: %d %s", rec.Code, rec.Body.String())
+	if _, err := publisher.Publish(context.Background(), evt); err != nil {
+		t.Fatalf("reconnect: %v", err)
 	}
-	evt.DesiredLiked = true // same ID, changed payload
-	if rec := ingressRequest(t, r, evt); rec.Code != 409 {
-		t.Fatalf("conflict: %d %s", rec.Code, rec.Body.String())
+	evt.DesiredLiked = true
+	if _, err := publisher.Publish(context.Background(), evt); err == nil {
+		t.Fatal("expected payload conflict")
 	}
-	// A broker channel error is uncertain, never accepted. Retry must re-declare.
 	if err = ch.ExchangeDelete("like.events", false, false); err != nil {
 		t.Fatal(err)
 	}
 	evt.EventID = "22222233445566778899aabbccddeeff"
-	if rec := ingressRequest(t, r, evt); rec.Code == 202 || !strings.Contains(rec.Body.String(), "unknown") {
-		t.Fatalf("channel close: %d %s", rec.Code, rec.Body.String())
+	_, err = publisher.Publish(context.Background(), evt)
+	var publishErr *rabbitmq.PublishError
+	if !errors.As(err, &publishErr) || !publishErr.Unknown {
+		t.Fatalf("channel close: %v", err)
 	}
-	if rec := ingressRequest(t, r, evt); rec.Code != 202 {
-		t.Fatalf("channel recovery: %d %s", rec.Code, rec.Body.String())
+	if _, err := publisher.Publish(context.Background(), evt); err != nil {
+		t.Fatalf("channel recovery: %v", err)
 	}
-	t.Log("real ACK, persistent MessageId/body, Return+ACK rejection, channel close, reconnect, confirmed-retry side effects and payload conflict verified in isolated vhost")
+	t.Log("legacy transport ACK, persistent envelope, Return, channel recovery and payload conflict remain covered; no legacy HTTP write path")
 }

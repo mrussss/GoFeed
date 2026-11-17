@@ -1,6 +1,10 @@
 package video
 
-import "time"
+import (
+	"errors"
+	"strings"
+	"time"
+)
 
 type Like struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
@@ -25,6 +29,15 @@ type LikeCommandRequest struct {
 	RequestID    string `json:"request_id"`
 	VideoID      uint   `json:"video_id"`
 	DesiredLiked bool   `json:"desired_liked"`
+}
+
+var ErrInvalidLikeCommand = errors.New("video_id and request_id (1-64 bytes) are required")
+
+func (req LikeCommandRequest) Validate() error {
+	if req.VideoID == 0 || strings.TrimSpace(req.RequestID) == "" || len(req.RequestID) > 64 {
+		return ErrInvalidLikeCommand
+	}
+	return nil
 }
 
 // CommandOutbox contains accepted like commands, not video publication events.

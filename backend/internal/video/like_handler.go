@@ -5,10 +5,10 @@ import (
 	"errors"
 	"feedsystem_video_go/internal/apierror"
 	"feedsystem_video_go/internal/middleware/jwt"
-	"feedsystem_video_go/internal/middleware/rabbitmq"
+	"gorm.io/gorm"
 	"io"
 	"net/http"
-	"time"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,12 +23,9 @@ func NewLikeHandler(service *LikeService) *LikeHandler {
 
 // Write requests deliberately differ from the read-only LikeRequest.
 type LikeIntentRequest struct {
-	SchemaVersion int       `json:"schema_version"`
-	EventID       string    `json:"event_id"`
-	VideoID       uint      `json:"video_id"`
-	Revision      string    `json:"revision"`
-	DesiredLiked  *bool     `json:"desired_liked"`
-	OccurredAt    time.Time `json:"occurred_at"`
+	RequestID    string `json:"request_id"`
+	VideoID      uint   `json:"video_id"`
+	DesiredLiked *bool  `json:"desired_liked"`
 }
 
 func (lh *LikeHandler) Like(c *gin.Context)   { lh.accept(c, true) }
@@ -38,49 +35,43 @@ func (lh *LikeHandler) accept(c *gin.Context, desired bool) {
 	var req LikeIntentRequest
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
 	decoder := json.NewDecoder(c.Request.Body)
-	decoder.DisallowUnknownFields() // in particular, user_id cannot be supplied
+	decoder.DisallowUnknownFields() // account_id and client revisions are not accepted.
 	if err := decoder.Decode(&req); err != nil {
-		c.JSON(400, gin.H{"status": "rejected", "error": "invalid like request"})
+		c.JSON(400, gin.H{"error": "invalid like request"})
 		return
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		c.JSON(400, gin.H{"status": "rejected", "error": "expected one JSON object"})
+		c.JSON(400, gin.H{"error": "expected one JSON object"})
 		return
 	}
 	accountID, err := jwt.GetAccountID(c)
 	if err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"status": "rejected", "error": err.Error()})
+		c.JSON(401, gin.H{"error": "authentication required"})
 		return
 	}
-	evt := rabbitmq.LikeEvent{SchemaVersion: req.SchemaVersion, EventID: req.EventID, UserID: accountID, VideoID: req.VideoID,
-		Revision: req.Revision, DesiredLiked: desired, OccurredAt: req.OccurredAt}
 	if req.DesiredLiked == nil || *req.DesiredLiked != desired {
-		c.JSON(400, gin.H{"status": "rejected", "error": "desired_liked must match endpoint"})
+		c.JSON(400, gin.H{"error": "desired_liked must match endpoint"})
 		return
 	}
-	if err := evt.Validate(); err != nil {
-		c.JSON(400, gin.H{"status": "rejected", "error": err.Error()})
-		return
-	}
-	if err := lh.service.Accept(c.Request.Context(), evt); err != nil {
-		code, status, result := "request_failed", apierror.ClassifyHTTPStatus(err), "rejected"
-		var publishErr *rabbitmq.PublishError
-		if errors.As(err, &publishErr) {
-			code, status = publishErr.Code, 503
-			if publishErr.Code == "event_payload_conflict" {
-				status = 409
-			}
-			if publishErr.Unknown {
-				result = "unknown"
-			}
-			if publishErr.Code == "confirm_timeout" {
-				status = 504
-			}
+	command, err := lh.service.AcceptLikeCommand(c.Request.Context(), accountID, LikeCommandRequest{
+		RequestID: req.RequestID, VideoID: req.VideoID, DesiredLiked: desired,
+	})
+	if err != nil {
+		status, message := 500, "command acceptance failed; retry with the same request_id"
+		switch {
+		case errors.Is(err, ErrInvalidLikeCommand):
+			status, message = 400, err.Error()
+		case errors.Is(err, ErrLikeCommandConflict):
+			status, message = 409, err.Error()
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			status, message = 404, "video not found"
 		}
-		c.JSON(status, gin.H{"status": result, "code": code, "error": code, "event_id": evt.EventID, "revision": evt.Revision})
+		c.JSON(status, gin.H{"error": message, "request_id": req.RequestID})
 		return
 	}
-	c.JSON(202, gin.H{"status": "accepted", "event_id": evt.EventID, "revision": evt.Revision})
+	// Accepted means durable intent, not an already applied like.
+	c.JSON(202, gin.H{"status": "accepted", "request_id": command.RequestID,
+		"command_id": strconv.FormatUint(command.ID, 10), "revision": strconv.FormatUint(command.Revision, 10)})
 }
 
 func (lh *LikeHandler) IsLiked(c *gin.Context) {

@@ -30,7 +30,7 @@ type CachedFeedData struct {
 }
 
 func NewFeedService(repo *FeedRepository, likeRepo *video.LikeRepository, rediscache *rediscache.Client) *FeedService {
-	return &FeedService{repo: repo, likeRepo: likeRepo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second), cacheTTL: 24 * time.Hour}
+	return &FeedService{repo: repo, likeRepo: likeRepo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second), cacheTTL: 60 * time.Second}
 }
 
 func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*video.Video, error) {
@@ -126,7 +126,7 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 						setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 						defer setCancel()
 
-						f.rediscache.SetBytes(setCtx, k, b, time.Hour)
+						f.rediscache.SetBytes(setCtx, k, b, 60*time.Second)
 					}(cachekey, b)
 				}
 				return videoList[0], err
@@ -373,7 +373,7 @@ func (f *FeedService) ListByFollowing(ctx context.Context, limit int, latestBefo
 		if err == nil {
 			var cached ListByFollowingResponse
 			if err := json.Unmarshal(b, &cached); err == nil {
-				return cached, nil
+				return f.refreshFollowingLikes(ctx, cached, viewerAccountID)
 			}
 		} else if rediscache.IsMiss(err) { // 缓存未命中
 			lockKey := "lock:" + cacheKey
@@ -384,7 +384,7 @@ func (f *FeedService) ListByFollowing(ctx context.Context, limit int, latestBefo
 				if b, err := f.rediscache.GetBytes(cacheCtx, cacheKey); err == nil {
 					var cached ListByFollowingResponse
 					if err := json.Unmarshal(b, &cached); err == nil {
-						return cached, nil
+						return f.refreshFollowingLikes(ctx, cached, viewerAccountID)
 					}
 				} else { // 缓存未命中，从数据库中查询
 					resp, err := doListByFollowingFromDB()
@@ -402,7 +402,7 @@ func (f *FeedService) ListByFollowing(ctx context.Context, limit int, latestBefo
 					if b, err := f.rediscache.GetBytes(cacheCtx, cacheKey); err == nil {
 						var cached ListByFollowingResponse
 						if err := json.Unmarshal(b, &cached); err == nil {
-							return cached, nil
+							return f.refreshFollowingLikes(ctx, cached, viewerAccountID)
 						}
 					}
 				}
@@ -574,4 +574,20 @@ func (f *FeedService) ListByTag(ctx context.Context, tagName string, limit int, 
 		return nil, err
 	}
 	return f.buildFeedVideos(ctx, videos, viewerAccountID)
+}
+
+// User like state must be read fresh even when the following page is cached.
+func (f *FeedService) refreshFollowingLikes(ctx context.Context, response ListByFollowingResponse, accountID uint) (ListByFollowingResponse, error) {
+	ids := make([]uint, 0, len(response.VideoList))
+	for _, item := range response.VideoList {
+		ids = append(ids, item.ID)
+	}
+	liked, err := f.likeRepo.BatchGetLiked(ctx, ids, accountID)
+	if err != nil {
+		return ListByFollowingResponse{}, err
+	}
+	for i := range response.VideoList {
+		response.VideoList[i].IsLiked = liked[response.VideoList[i].ID]
+	}
+	return response, nil
 }

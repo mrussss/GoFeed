@@ -1,21 +1,19 @@
 import { ApiError, postJson } from './client'
 import type { IsLikedResponse, Video } from './types'
 
-export type LikeIntent = {
-  schema_version: 2
-  event_id: string
+export type LikeCommand = {
+  request_id: string
   video_id: number
-  revision: string
   desired_liked: boolean
-  occurred_at: string
 }
-export type LikeAccepted = { status: 'accepted'; event_id: string; revision: string }
+export type LikeAccepted = { status: 'accepted'; request_id: string; command_id: string; revision: string }
 
-export async function sendIntent(intent: LikeIntent, accountId: number) {
-  const res = await postJson<LikeAccepted>(intent.desired_liked ? '/like/like' : '/like/unlike', intent,
+export async function sendCommand(command: LikeCommand, accountId: number) {
+  const res = await postJson<LikeAccepted>(command.desired_liked ? '/like/like' : '/like/unlike', command,
     { authRequired: true, timeoutMs: 8000, expectedAccountId: accountId })
-  if (res?.status !== 'accepted' || res.event_id !== intent.event_id || res.revision !== intent.revision) {
-    throw new ApiError('点赞接收结果未知，请重试原操作', 0, { status: 'unknown' })
+  if (res?.status !== 'accepted' || res.request_id !== command.request_id ||
+      !/^[1-9][0-9]*$/.test(res.command_id) || !/^[1-9][0-9]*$/.test(res.revision)) {
+    throw new ApiError('命令受理结果未知，请重试原请求', 0)
   }
   return res
 }

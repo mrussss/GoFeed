@@ -96,7 +96,7 @@ func TestLikeCommandMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := video.NewLikeRepository(db)
-	service := video.NewLikeService(repo, nil, nil, nil) // A1 must not need MQ or Redis.
+	service := video.NewLikeService(repo, nil) // A1 must not need MQ or Redis.
 	state := func(t *testing.T, accountID, videoID uint) video.Like {
 		t.Helper()
 		var row video.Like
@@ -229,7 +229,7 @@ func TestLikeCommandMySQL(t *testing.T) {
 		if err := db.Create(&video.Video{ID: 80, AuthorID: 80, Username: "test", Title: "A1 existing video", PlayURL: "test.mp4", CoverURL: "test.jpg"}).Error; err != nil {
 			t.Fatal(err)
 		}
-		checkedService := video.NewLikeService(repo, video.NewVideoRepository(db), nil, nil)
+		checkedService := video.NewLikeService(repo, video.NewVideoRepository(db))
 		command, err := checkedService.AcceptLikeCommand(ctx, 80, video.LikeCommandRequest{RequestID: "video-exists", VideoID: 80, DesiredLiked: true})
 		if err != nil {
 			t.Fatal(err)
@@ -239,7 +239,7 @@ func TestLikeCommandMySQL(t *testing.T) {
 		}
 	})
 	t.Run("service_missing_video_no_writes", func(t *testing.T) {
-		checkedService := video.NewLikeService(repo, video.NewVideoRepository(db), nil, nil)
+		checkedService := video.NewLikeService(repo, video.NewVideoRepository(db))
 		command, err := checkedService.AcceptLikeCommand(ctx, 81, video.LikeCommandRequest{RequestID: "video-missing", VideoID: 999999, DesiredLiked: true})
 		if !errors.Is(err, gorm.ErrRecordNotFound) || command != nil {
 			t.Fatalf("missing video accepted: command=%+v err=%v", command, err)

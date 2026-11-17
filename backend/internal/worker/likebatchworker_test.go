@@ -185,7 +185,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			seedVideo(t, 1, int64(tc.initial))
 			seedLike(t, 1, 1, tc.initial, 10, tc.applied)
 			before := getLike(t, 1, 1)
-			batchWorker := worker.NewLikeCommandBatchWorker(nil, repo, rabbitmq.LikeCommandPartition(1, 1))
+			batchWorker := worker.NewLikeCommandBatchWorker(nil, repo, rabbitmq.LikeCommandPartition(1, 1), nil)
 			for _, step := range tc.steps {
 				acks := &batchAckProbe{}
 				if err := batchWorker.HandleBatch(ctx, deliveries(t, step, acks)); err != nil {
@@ -224,7 +224,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			err := repo.ApplyLikeCommandBatch(ctx, events)
+			_, err := repo.ApplyLikeCommandBatch(ctx, events)
 			db.Callback().Update().Remove("b_count_video_updates")
 			if err != nil {
 				t.Fatal(err)
@@ -265,7 +265,8 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			for _, account := range accounts {
 				go func(account uint) {
 					<-start
-					done <- repo.ApplyLikeCommandBatch(ctx, []rabbitmq.LikeCommandEvent{event(account, 1, revision, revision == 1)})
+					_, err := repo.ApplyLikeCommandBatch(ctx, []rabbitmq.LikeCommandEvent{event(account, 1, revision, revision == 1)})
+					done <- err
 				}(account)
 			}
 			close(start)
@@ -311,7 +312,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		}
 		defer db.Exec("DROP TRIGGER b_fail_count")
 		acks := &batchAckProbe{}
-		err := worker.NewLikeCommandBatchWorker(nil, repo, partition).HandleBatch(ctx, deliveries(t, []rabbitmq.LikeCommandEvent{event(1, 1, 1, true), event(account, 2, 1, true)}, acks))
+		err := worker.NewLikeCommandBatchWorker(nil, repo, partition, nil).HandleBatch(ctx, deliveries(t, []rabbitmq.LikeCommandEvent{event(1, 1, 1, true), event(account, 2, 1, true)}, acks))
 		if err == nil || acks.calls != 0 {
 			t.Fatalf("failed transaction ACKed: err=%v acks=%d", err, acks.calls)
 		}
@@ -328,7 +329,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		seedVideo(t, 1, 0)
 		seedLike(t, 1, 1, 1, 1, 0)
 		acks := &batchAckProbe{}
-		err := worker.NewLikeCommandBatchWorker(nil, repo, rabbitmq.LikeCommandPartition(1, 1)).HandleBatch(ctx, deliveries(t, []rabbitmq.LikeCommandEvent{event(1, 1, 1, false)}, acks))
+		err := worker.NewLikeCommandBatchWorker(nil, repo, rabbitmq.LikeCommandPartition(1, 1), nil).HandleBatch(ctx, deliveries(t, []rabbitmq.LikeCommandEvent{event(1, 1, 1, false)}, acks))
 		if err == nil || acks.calls != 0 || getLike(t, 1, 1).AppliedRevision != 0 || getVideo(t, 1).LikesCount != 0 {
 			t.Fatalf("inconsistent count hidden: %v", err)
 		}
@@ -351,7 +352,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			}
 			return nil
 		}}
-		w := worker.NewLikeCommandBatchWorker(nil, repo, rabbitmq.LikeCommandPartition(1, 1))
+		w := worker.NewLikeCommandBatchWorker(nil, repo, rabbitmq.LikeCommandPartition(1, 1), nil)
 		messages := []rabbitmq.LikeCommandEvent{event(1, 1, 1, true), event(1, 1, 2, true)}
 		if err := w.HandleBatch(ctx, deliveries(t, messages, acks)); err == nil || acks.calls != 2 {
 			t.Fatalf("ACK failure not surfaced: %v", err)
@@ -368,7 +369,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 	})
 	t.Run("malformed_target_is_not_acked", func(t *testing.T) {
 		acks := &batchAckProbe{}
-		err := worker.NewLikeCommandBatchWorker(nil, repo, 0).HandleBatch(ctx, []amqp.Delivery{{Body: []byte(`{"command_id":"1","request_id":"bad","account_id":1,"video_id":1,"revision":"1"}`), Acknowledger: acks}})
+		err := worker.NewLikeCommandBatchWorker(nil, repo, 0, nil).HandleBatch(ctx, []amqp.Delivery{{Body: []byte(`{"command_id":"1","request_id":"bad","account_id":1,"video_id":1,"revision":"1"}`), Acknowledger: acks}})
 		if err == nil || acks.calls != 0 {
 			t.Fatal("missing target silently accepted")
 		}
@@ -422,7 +423,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			}
 			runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			finished := make(chan error, 1)
-			go func() { finished <- worker.RunLikeCommandBatchWorkers(runCtx, conn, repo) }()
+			go func() { finished <- worker.RunLikeCommandBatchWorkers(runCtx, conn, repo, nil) }()
 			defer func() { cancel() }()
 			for {
 				var applied int64
@@ -456,7 +457,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 				t.Fatal(err)
 			}
 			var exclusiveErr *amqp.Error
-			if err := worker.NewLikeCommandBatchWorker(second, repo, 0).Run(runCtx); !errors.As(err, &exclusiveErr) || (exclusiveErr.Code != 403 && exclusiveErr.Code != 405) {
+			if err := worker.NewLikeCommandBatchWorker(second, repo, 0, nil).Run(runCtx); !errors.As(err, &exclusiveErr) || (exclusiveErr.Code != 403 && exclusiveErr.Code != 405) {
 				cancel()
 				<-finished
 				t.Fatalf("second consumer was not rejected as exclusive: %v", err)
@@ -496,7 +497,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := worker.NewLikeCommandBatchWorker(ch, repo, partition).Run(attemptCtx); err == nil {
+			if err := worker.NewLikeCommandBatchWorker(ch, repo, partition, nil).Run(attemptCtx); err == nil {
 				t.Fatal("DB failure was not returned")
 			}
 			if err := db.Exec("DROP TRIGGER b_fail_count").Error; err != nil {
@@ -525,7 +526,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			runErr := worker.NewLikeCommandBatchWorker(ch, repo, partition).Run(attemptCtx)
+			runErr := worker.NewLikeCommandBatchWorker(ch, repo, partition, nil).Run(attemptCtx)
 			db.Callback().Update().Remove("b_close_before_commit")
 			if runErr == nil || !strings.Contains(runErr.Error(), "ACK failed") {
 				t.Fatalf("expected committed ACK failure: %v", runErr)
@@ -548,7 +549,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			}
 			retryCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 			defer cancel()
-			if err := worker.NewLikeCommandBatchWorker(ch, repo, partition).Run(retryCtx); !errors.Is(err, context.DeadlineExceeded) {
+			if err := worker.NewLikeCommandBatchWorker(ch, repo, partition, nil).Run(retryCtx); !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("retry worker: %v", err)
 			}
 			if _, ok, err := control.Get(queue, true); err != nil || ok {
@@ -579,7 +580,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		}
 		seedVideo(t, 1, 0)
 		seedLike(t, 1, 1, 0, 1, 0)
-		if err := repo.ApplyLikeCommandBatch(ctx, []rabbitmq.LikeCommandEvent{event(1, 1, 1, true)}); err != nil {
+		if _, err := repo.ApplyLikeCommandBatch(ctx, []rabbitmq.LikeCommandEvent{event(1, 1, 1, true)}); err != nil {
 			t.Fatal(err)
 		}
 		var legacyVersion, dirtyVersion uint64

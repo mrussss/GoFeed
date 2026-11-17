@@ -132,6 +132,24 @@ func main() {
 			log.Printf("Redis connected (popularity worker enabled)")
 		}
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// One durable command Relay and one reconnecting four-partition group.
+	likeRepo := video.NewLikeRepository(sqlDB)
+	commandMQ := mqrabbit.NewLikeCommandMQ(cfg.RabbitMQ)
+	defer commandMQ.Close()
+	commandsDone := make(chan struct{}, 2)
+	go func() {
+		defer func() { commandsDone <- struct{}{} }()
+		_ = worker.NewLikeCommandRelay(sqlDB, commandMQ, time.Second).Run(ctx)
+	}()
+	go func() {
+		defer func() { commandsDone <- struct{}{} }()
+		_ = worker.RunLikeCommandConsumers(ctx, cfg.RabbitMQ, likeRepo, cache)
+	}()
+	defer func() { stop(); <-commandsDone; <-commandsDone }()
+
 	// 连接 RabbitMQ（带重试）
 	url := mqrabbit.ConnectionURL(cfg.RabbitMQ)
 	var conn *amqp.Connection
@@ -150,9 +168,6 @@ func main() {
 	if err := declareSocialTopology(topoCh); err != nil {
 		log.Fatalf("Failed to declare social topology: %v", err)
 	}
-	if err := declareLikeTopology(topoCh); err != nil {
-		log.Fatalf("Failed to declare like topology: %v", err)
-	}
 	if err := declareCommentTopology(topoCh); err != nil {
 		log.Fatalf("Failed to declare comment topology: %v", err)
 	}
@@ -166,11 +181,7 @@ func main() {
 	// 准备 repo
 	socialRepo := social.NewSocialRepository(sqlDB)
 	videoRepo := video.NewVideoRepository(sqlDB)
-	likeRepo := video.NewLikeRepository(sqlDB)
 	commentRepo := video.NewCommentRepository(sqlDB)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	pprofServer, err := observability.NewPprofServer(
 		"Worker",
@@ -188,9 +199,7 @@ func main() {
 	go runWorkerWithRetry(ctx, "SocialWorker", conn, func(ch *amqp.Channel) error {
 		return worker.NewSocialWorker(ch, socialRepo, socialQueue).Run(ctx)
 	})
-	go runWorkerWithRetry(ctx, "LikeWorker", conn, func(ch *amqp.Channel) error {
-		return worker.NewLikeWorker(ch, likeRepo, videoRepo, likeQueue).Run(ctx)
-	})
+
 	go runWorkerWithRetry(ctx, "CommentWorker", conn, func(ch *amqp.Channel) error {
 		return worker.NewCommentWorker(ch, commentRepo, videoRepo, commentQueue).Run(ctx)
 	})

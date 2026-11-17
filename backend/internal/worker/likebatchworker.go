@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"feedsystem_video_go/internal/config"
 	"feedsystem_video_go/internal/middleware/rabbitmq"
+	rediscache "feedsystem_video_go/internal/middleware/redis"
 	"feedsystem_video_go/internal/video"
 	"fmt"
 	"log"
+	"net"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -21,11 +24,12 @@ const (
 type LikeCommandBatchWorker struct {
 	ch        *amqp.Channel
 	likes     *video.LikeRepository
+	cache     *rediscache.Client
 	partition int
 }
 
-func NewLikeCommandBatchWorker(ch *amqp.Channel, likes *video.LikeRepository, partition int) *LikeCommandBatchWorker {
-	return &LikeCommandBatchWorker{ch: ch, likes: likes, partition: partition}
+func NewLikeCommandBatchWorker(ch *amqp.Channel, likes *video.LikeRepository, partition int, cache *rediscache.Client) *LikeCommandBatchWorker {
+	return &LikeCommandBatchWorker{ch: ch, likes: likes, partition: partition, cache: cache}
 }
 
 // HandleBatch applies one collected batch and ACKs every delivery only after
@@ -54,8 +58,20 @@ func (w *LikeCommandBatchWorker) HandleBatch(ctx context.Context, batch []amqp.D
 		}
 		events = append(events, event)
 	}
-	if err := w.likes.ApplyLikeCommandBatch(ctx, events); err != nil {
+	changed, err := w.likes.ApplyLikeCommandBatch(ctx, events)
+	if err != nil {
 		return err
+	}
+	// Cache deletion happens after COMMIT and is deliberately best effort.
+	if w.cache != nil {
+		for _, id := range changed {
+			opCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+			err := w.cache.Del(opCtx, w.cache.Key("video:detail:id=%d", id), w.cache.Key("video:entity:%d", id))
+			cancel()
+			if err != nil {
+				log.Printf("like cache invalidation failed: video=%d: %v", id, err)
+			}
+		}
 	}
 	for _, delivery := range batch {
 		if err := delivery.Ack(false); err != nil {
@@ -128,10 +144,10 @@ func (w *LikeCommandBatchWorker) Run(ctx context.Context) error {
 	}
 }
 
-// RunLikeCommandBatchWorkers is opt-in assembly for an isolated/new command
-// pipeline. It does not start Relay or the legacy Worker. On any worker failure
+// RunLikeCommandBatchWorkers runs exactly one consumer per fixed partition.
+// It does not start Relay or the legacy Worker. On any worker failure
 // all four stop; the caller can restart this group after a fixed pause/reconnect.
-func RunLikeCommandBatchWorkers(ctx context.Context, conn *amqp.Connection, likes *video.LikeRepository) error {
+func RunLikeCommandBatchWorkers(ctx context.Context, conn *amqp.Connection, likes *video.LikeRepository, cache *rediscache.Client) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	channels := make([]*amqp.Channel, 0, rabbitmq.LikeCommandPartitions)
@@ -150,7 +166,7 @@ func RunLikeCommandBatchWorkers(ctx context.Context, conn *amqp.Connection, like
 	done := make(chan error, rabbitmq.LikeCommandPartitions)
 	for partition, ch := range channels {
 		go func(partition int, ch *amqp.Channel) {
-			done <- NewLikeCommandBatchWorker(ch, likes, partition).Run(ctx)
+			done <- NewLikeCommandBatchWorker(ch, likes, partition, cache).Run(ctx)
 		}(partition, ch)
 	}
 	first := <-done
@@ -159,4 +175,53 @@ func RunLikeCommandBatchWorkers(ctx context.Context, conn *amqp.Connection, like
 		<-done
 	}
 	return first
+}
+
+// RunLikeCommandConsumers reconnects the connection itself, not just Channels.
+// Each failed group fully stops before a replacement group is started.
+func RunLikeCommandConsumers(ctx context.Context, cfg config.RabbitMQConfig, likes *video.LikeRepository, cache *rediscache.Client) error {
+	for ctx.Err() == nil {
+		conn, err := amqp.DialConfig(rabbitmq.ConnectionURL(cfg), amqp.Config{Dial: func(network, addr string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 3 * time.Second}
+			conn, err := d.DialContext(ctx, network, addr)
+			if err == nil {
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			}
+			return conn, err
+		}})
+		if err == nil {
+			// Never let legacy physical-deletion consumers race the new state machine.
+			legacy, inspectErr := conn.Channel()
+			if inspectErr == nil {
+				var q amqp.Queue
+				q, inspectErr = legacy.QueueInspect("like.events")
+				_ = legacy.Close()
+				var brokerErr *amqp.Error
+				if errors.As(inspectErr, &brokerErr) && brokerErr.Code == 404 {
+					inspectErr = nil
+				}
+				if inspectErr == nil && (q.Messages > 0 || q.Consumers > 0) {
+					inspectErr = fmt.Errorf("legacy like.events not drained: ready=%d consumers=%d; stop legacy API and drain with old Worker before cutover", q.Messages, q.Consumers)
+				}
+			}
+			if inspectErr == nil {
+				err = RunLikeCommandBatchWorkers(ctx, conn, likes, cache)
+			} else {
+				err = inspectErr
+			}
+			_ = conn.Close()
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		log.Printf("like command consumers: %v; retry in 2s", err)
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return ctx.Err()
 }

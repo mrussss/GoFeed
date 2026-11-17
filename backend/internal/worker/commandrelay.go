@@ -15,8 +15,8 @@ type LikeCommandPublisher interface {
 	Publish(context.Context, rabbitmq.LikeCommandEvent) error
 }
 
-// LikeCommandRelay is deliberately single-instance. Run it in a goroutine only
-// after the B-stage consumers are ready; it is not started by the current main.
+// LikeCommandRelay is deliberately single-instance, started by the Worker main.
+// It can buffer durable commands while the partition consumers are reconnecting.
 // The caller owns and closes the publisher after Run returns.
 type LikeCommandRelay struct {
 	db        *gorm.DB

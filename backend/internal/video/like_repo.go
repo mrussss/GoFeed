@@ -60,7 +60,7 @@ func (r *LikeRepository) DeleteByVideoAndAccount(ctx context.Context, videoID, a
 func (r *LikeRepository) IsLiked(ctx context.Context, videoID, accountID uint) (bool, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&Like{}).
-		Where("video_id = ? AND account_id = ?", videoID, accountID).
+		Where("video_id = ? AND account_id = ? AND status = 1", videoID, accountID).
 		Count(&count).Error
 	if err != nil {
 		return false, err
@@ -78,7 +78,7 @@ func (r *LikeRepository) BatchGetLiked(ctx context.Context, videoIDs []uint, acc
 	}
 	var likes []Like
 	err := r.db.WithContext(ctx).Model(&Like{}).
-		Where("video_id IN ? AND account_id = ?", videoIDs, accountID).
+		Where("video_id IN ? AND account_id = ? AND status = 1", videoIDs, accountID).
 		Find(&likes).Error
 	if err != nil {
 		return nil, err
@@ -97,8 +97,8 @@ func (r *LikeRepository) ListLikedVideos(ctx context.Context, accountID uint) ([
 	err := r.db.WithContext(ctx).
 		Model(&Video{}).
 		Joins("JOIN likes ON likes.video_id = videos.id").
-		Where("likes.account_id = ?", accountID).
-		Order("likes.created_at desc").
+		Where("likes.account_id = ? AND likes.status = 1", accountID).
+		Order("likes.updated_at desc").
 		Limit(200).
 		Find(&videos).Error
 	if err != nil {
@@ -113,8 +113,8 @@ var (
 )
 
 // AcceptLikeCommand atomically allocates a server revision and stores intent.
-// It does not apply a like, change counts, or publish to RabbitMQ. Do not wire
-// this method into the Phase 1 API while its reads/Worker use physical deletion.
+// It does not apply a like, change counts, or publish to RabbitMQ;
+// this method must commit before HTTP acceptance is returned.
 func (r *LikeRepository) AcceptLikeCommand(ctx context.Context, accountID uint, req LikeCommandRequest) (*CommandOutbox, error) {
 	if accountID == 0 || req.VideoID == 0 || strings.TrimSpace(req.RequestID) == "" || len(req.RequestID) > 64 {
 		return nil, errors.New("account_id, video_id and request_id (1-64 bytes) are required")
@@ -185,24 +185,24 @@ func (r *LikeRepository) AcceptLikeCommand(ctx context.Context, accountID uint, 
 
 // ApplyLikeCommandBatch applies latest target states, not individual +/-1 events.
 // It never creates/deletes relations or changes the A1 allocation watermark.
-func (r *LikeRepository) ApplyLikeCommandBatch(ctx context.Context, events []rabbitmq.LikeCommandEvent) error {
+func (r *LikeRepository) ApplyLikeCommandBatch(ctx context.Context, events []rabbitmq.LikeCommandEvent) ([]uint, error) {
 	type pair struct{ videoID, accountID uint }
 	latest := make(map[pair]rabbitmq.LikeCommandEvent, len(events))
 	for _, event := range events {
 		if err := event.Validate(); err != nil {
-			return err
+			return nil, err
 		}
 		key := pair{event.VideoID, event.AccountID}
 		previous, exists := latest[key]
 		if exists && event.Revision == previous.Revision && event.DesiredLiked != previous.DesiredLiked {
-			return fmt.Errorf("conflicting targets for video %d account %d revision %d", event.VideoID, event.AccountID, event.Revision)
+			return nil, fmt.Errorf("conflicting targets for video %d account %d revision %d", event.VideoID, event.AccountID, event.Revision)
 		}
 		if !exists || event.Revision > previous.Revision {
 			latest[key] = event
 		}
 	}
 	if len(latest) == 0 {
-		return nil
+		return nil, nil
 	}
 	keys := make([]pair, 0, len(latest))
 	for key := range latest {
@@ -214,7 +214,8 @@ func (r *LikeRepository) ApplyLikeCommandBatch(ctx context.Context, events []rab
 		}
 		return keys[i].accountID < keys[j].accountID
 	})
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var changed []uint
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		deltas := make(map[uint]int64)
 		now := time.Now().UTC()
 		for _, key := range keys {
@@ -263,6 +264,11 @@ func (r *LikeRepository) ApplyLikeCommandBatch(ctx context.Context, events []rab
 				return fmt.Errorf("video %d missing or likes_count would become negative", id)
 			}
 		}
+		changed = videos
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return changed, nil
 }

@@ -1,24 +1,26 @@
 import { computed, reactive } from 'vue'
 import { ApiError } from '../api/client'
 import * as likeApi from '../api/like'
-import type { LikeIntent } from '../api/like'
+import type { LikeCommand } from '../api/like'
 import { useAuthStore } from '../stores/auth'
 import { useSocialStore } from '../stores/social'
 import { useToastStore } from '../stores/toast'
 
 type LikeItem = { id: number; is_liked: boolean; likes_count: number }
-type Pending = { intent: LikeIntent; beforeLiked: boolean; beforeCount: number; uncertain: boolean }
-type Saved = { revision: string; pending?: Pending }
+type Pending = { intent: LikeCommand; beforeLiked: boolean; beforeCount: number; uncertain: boolean }
+type Saved = { pending?: Pending }
 const sending = reactive<Record<string, boolean>>({})
 const displays = reactive<Record<string, { liked: boolean; count: number; accepted?: boolean }>>({})
-const storageKey = (accountId: number, videoId: number) => `gofeed:like:v2:${accountId}:${videoId}`
+const storageKey = (accountId: number, videoId: number) => `gofeed:like-command:v1:${accountId}:${videoId}`
 
 function readSaved(key: string): Saved {
   const raw = localStorage.getItem(key)
-  if (!raw) return { revision: '0' }
+  if (!raw) return {}
   const saved = JSON.parse(raw) as Saved
-  if (!/^(0|[1-9][0-9]*)$/.test(saved.revision) || BigInt(saved.revision) > 18446744073709551615n) {
-    throw new Error('本地点赞版本损坏，请保留记录并联系支持')
+  const intent = saved.pending?.intent
+  if (intent && (!/^[0-9a-f]{32}$/.test(intent.request_id) || !Number.isSafeInteger(intent.video_id) ||
+      intent.video_id <= 0 || typeof intent.desired_liked !== 'boolean')) {
+    throw new Error('本地点赞请求损坏，请检查浏览器存储')
   }
   return saved
 }
@@ -29,7 +31,7 @@ export function useLikeFollow(needLogin: () => void) {
   const toast = useToastStore()
 
   const likeBusy = computed(() => {
-    const prefix = `gofeed:like:v2:${auth.claims?.account_id}:`
+    const prefix = `gofeed:like-command:v1:${auth.claims?.account_id}:`
     return Object.fromEntries(Object.entries(sending).filter(([key]) => key.startsWith(prefix)).map(([key, busy]) => [key.slice(prefix.length), busy]))
   })
   const followBusy = reactive<Record<string, boolean>>({})
@@ -76,40 +78,37 @@ export function useLikeFollow(needLogin: () => void) {
       pending = saved.pending
       wasUncertain = !!pending?.uncertain
       if (!pending) {
-        const revision = BigInt(saved.revision) + 1n
-        if (revision > 18446744073709551615n) throw new Error('点赞版本已达上限')
         const bytes = crypto.getRandomValues(new Uint8Array(16))
-        const eventId = Array.from(bytes, n => n.toString(16).padStart(2, '0')).join('')
+        const requestId = Array.from(bytes, n => n.toString(16).padStart(2, '0')).join('')
         pending = { intent: {
-          schema_version: 2, event_id: eventId, video_id: item.id, revision: revision.toString(),
-          desired_liked: !item.is_liked, occurred_at: new Date().toISOString(),
+          request_id: requestId, video_id: item.id,
+          desired_liked: !item.is_liked,
         }, beforeLiked: item.is_liked, beforeCount: item.likes_count, uncertain: true }
-        saved = { revision: revision.toString(), pending }
+        saved = { pending }
       }
-      // Persist BEFORE showing/sending. A crash leaves the same immutable event
+      // Persist BEFORE showing/sending. A crash leaves the same immutable request
       // for the next click to retry, rather than permitting an opposite intent.
       localStorage.setItem(key, JSON.stringify(saved))
       displays[key] = { liked: pending.intent.desired_liked,
         count: Math.max(0, pending.beforeCount + (pending.intent.desired_liked ? 1 : -1)) }
       protectLike(item)
       sent = true
-      await likeApi.sendIntent(pending.intent, accountId)
-      localStorage.setItem(key, JSON.stringify({ revision: saved.revision }))
+      await likeApi.sendCommand(pending.intent, accountId)
+      localStorage.removeItem(key)
       displays[key]!.accepted = true
-      if (auth.claims?.account_id === accountId) toast.info('已接收，点赞数据正在异步保存')
+      if (auth.claims?.account_id === accountId) toast.info('命令已受理，点赞状态正在异步更新')
     } catch (e) {
-      const payload = e instanceof ApiError ? e.payload as { status?: string } | undefined : undefined
-      const definite = e instanceof ApiError && (payload?.status === 'rejected' || (e.status >= 400 && e.status < 500 && ![408, 409].includes(e.status)))
+      const definite = e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408
       if (saved && pending) {
         if (definite && !wasUncertain) {
           // Keep a rollback overlay while synchronous view watchers run; deleting
           // it first could rehydrate the still-persisted optimistic operation.
           displays[key] = { liked: pending.beforeLiked, count: pending.beforeCount, accepted: true }
-          try { localStorage.setItem(key, JSON.stringify({ revision: saved.revision })) } catch { /* keep unresolved on disk */ }
+          try { localStorage.removeItem(key) } catch { /* keep unresolved on disk */ }
           if (auth.claims?.account_id === accountId) protectLike(item)
         }
-        // Unknown, conflict, network failure, or rejection after an earlier
-        // unknown attempt: preserve pending. Next click retries this event only.
+        // Network failure, 5xx, or rejection after an earlier
+        // unknown attempt: preserve pending. Next click retries this request only.
       }
       if (auth.claims?.account_id === accountId) {
         toast.error(!sent || (definite && !wasUncertain) ? (e instanceof Error ? e.message : String(e)) : '接收结果未知，再次点击将重试原操作')

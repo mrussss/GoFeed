@@ -20,11 +20,11 @@ func (c *Client) SetBytes(ctx context.Context, key string, value []byte, ttl tim
 	return c.rdb.Set(ctx, key, value, ttl).Err()
 }
 
-func (c *Client) Del(ctx context.Context, key string) error {
+func (c *Client) Del(ctx context.Context, keys ...string) error {
 	if c == nil || c.rdb == nil {
 		return errors.New("redis client not initialized")
 	}
-	return c.rdb.Del(ctx, key).Err()
+	return c.rdb.Del(ctx, keys...).Err()
 }
 
 func (c *Client) DelByPattern(ctx context.Context, pattern string) error {
