@@ -9,10 +9,10 @@
 | 开发语言        | Go (Golang)                  | 后端核心业务逻辑实现（API + Worker）。                       |
 | Web 框架        | Gin                          | HTTP 路由注册、参数绑定、统一返回与中间件链（JWTAuth / SoftJWTAuth）。 |
 | ORM 框架        | GORM                         | 模型定义、CRUD、启动时 AutoMigrate 自动迁移表结构。          |
-| 持久化          | MySQL                        | 存储 `Account / Video / Like / Comment / Social / Tag / VideoTag / Message / Notification / OutboxMsg` 等表及统计字段（如 likes_count、popularity）。 |
+| 持久化          | MySQL                        | 存储 `Account / Video / Like / Comment / Social / Tag / VideoTag / Message / Notification / OutboxMsg / CommandOutbox` 等表及统计字段（如 likes_count、popularity）。 |
 | 缓存/排行榜     | Redis（可选）                | Token/Refresh Token 缓存、Feed 时间线、视频实体缓存、视频详情缓存、热榜 ZSET、分片上传会话、接口限流计数。 |
-| 消息队列        | RabbitMQ（可选）             | Topic 事件总线：`like.events`、`comment.events`、`social.events`、`video.popularity.events`、`video.timeline.events`；支持 DLX、异常降级直写。 |
-| 异步执行        | Worker（Go）                 | `cmd/worker`：LikeWorker/CommentWorker/SocialWorker/PopularityWorker；API 进程内启动 OutboxPoller、TimelineConsumer 与 NotificationWorker。 |
+| 消息队列 | RabbitMQ | 点赞命令使用持久化 Direct Exchange `like.commands` 与四个固定分区；评论、关注、热度、视频时间线沿用各自 Topic 链路。MQ 暂时不可用时，已持久化点赞命令留在 MySQL 等待投递。 |
+| 异步执行 | Worker（Go） | `cmd/worker` 启动单个 LikeCommandRelay、四分区 LikeCommandBatchWorker，以及原有 CommentWorker/SocialWorker/PopularityWorker；API 进程保留视频时间线与评论/关注通知消费者。 |
 | 文件存储        | Local Disk（可替换对象存储） | 视频与封面文件存放本地目录（生产可替换为 OSS/S3/MinIO）。    |
 | 容器化/依赖编排 | Docker / Docker Compose      | 一键拉起 RabbitMQ 等依赖（可配合 `./start.sh`），便于本地联调与部署环境一致性。 |
 | 接口调试        | Postman Collection           | `test/postman.json`：预置变量、批量跑接口与部分断言脚本。    |
@@ -65,21 +65,33 @@
 | Handler           | POST `/video/getDetail`            | `{id}` -> `{video_detail}`                            | MySQL ✅ / Redis ✅ | 视频详情缓存，使用互斥锁防击穿，变更时主动失效。     |
 | Service(建议命名) | `UploadVideo/UploadCover/ChunkInit/ChunkUpload/ChunkStatus/ChunkComplete/Publish/ListByAuthorID/GetDetail` | - | - | `Publish` 通过事务同时写视频、Outbox 与标签关系；`GetDetail` 优先 Redis，未命中回源 MySQL 后回填。 |
 
-### 点赞系统
+### 点赞系统：A1 → A2 → B → C
 
-#### 表设计
+MySQL 是点赞关系与总数的权威来源。接口设置目标状态，不同步应用点赞，也不直接向 RabbitMQ 发消息。
 
-![image-20251226232421969](picture/点赞表.png)
+| 数据 | 字段与约束 | 作用 |
+| --- | --- | --- |
+| likes | 保留 id 主键、UNIQUE(video_id,account_id)、created_at；增加 status、next_revision、applied_revision、updated_at | status=1 有效，status=0 未点赞；取消点赞保留行。历史记录迁移为有效状态，两个 Revision 初始为 0，updated_at 从 created_at 回填 |
+| command_outbox | id、account_id、request_id、video_id、desired_liked、revision、published_at、created_at | 独立于视频发布 Outbox；UNIQUE(account_id,request_id)，INDEX(published_at)，NULL 表示待发布 |
 
-#### 相关方法
+| 路由 | 请求/响应 | 行为 |
+| --- | --- | --- |
+| POST `/like/like` | `{request_id,video_id,desired_liked:true}` → 202 `{status:"accepted",request_id,command_id,revision}` | JWT 取得 account_id；检查参数与视频；A1 事务提交后返回。command_id/revision 使用十进制字符串 |
+| POST `/like/unlike` | `{request_id,video_id,desired_liked:false}` → 相同受理结构 | 相同 Request ID 和内容返回原命令；内容冲突返回 409；不执行物理删除 |
+| POST `/like/isLiked` | `{video_id}` → `{is_liked}` | 只认 status=1 |
+| POST `/like/listMyLikedVideos` | `{}` → `{videos[]}` | 过滤有效关系，按 updated_at DESC 排序；Feed BatchGetLiked 同样过滤 status=1 |
 
-| 层级              | 方法/路由             | 输入 -> 输出                 | 存储(MySQL/Redis/MQ)           | 核心说明                                                     |
-| ----------------- | --------------------- | ---------------------------- | ------------------------------ | ------------------------------------------------------------ |
-| Handler           | POST `/like/isLiked`  | `{video_id}` -> `{is_liked}` | MySQL ✅                        | JWT 保护；判断当前用户是否点赞该视频。                       |
-| Handler           | POST `/like/like`     | `{video_id}` -> `{}`         | MQ ✅(可选) / MySQL ✅ / Redis ✅ | 优先发布 `like.events`（`like.like`）与热度增量事件；发布失败降级直写。 |
-| Handler           | POST `/like/unlike`   | `{video_id}` -> `{}`         | MQ ✅(可选) / MySQL ✅ / Redis ✅ | 同上（`like.unlike`）；更新 likes_count 与 popularity。      |
-| Handler           | POST `/like/listMyLikedVideos` | `{}` -> `{videos[]}` | MySQL ✅ | 当前用户点赞过的视频列表。                                    |
-| Service(建议命名) | `IsLiked/Like/Unlike/ListLikedVideos` | -                   | -                              | 与 MQ 降级策略绑定：任一发布失败则对失败目标直写；点赞事件同步触发作者通知。 |
+- **A1 事务受理**：请求幂等查询；确保占位 likes 行存在且初始 status=0；锁定关系并递增 next_revision；写 Command Outbox；COMMIT 后才返回 202。并发 Request ID 冲突依赖唯一索引，失败事务回滚后重新读取原命令。202 只表示命令已持久化，不表示状态已经应用。
+- **A2 Relay**：单实例，每轮查询 published_at IS NULL、按 id 升序最多 100 条；满 100 条成功后立即继续，空闲或失败时等待。逐条使用 Persistent、mandatory、Publisher Confirm；只有成功路由并收到 ACK 后才更新 published_at。发布成功但标记失败允许重发同一 command_id。
+- **四分区**：持久化 Direct Exchange `like.commands`，队列 `like.commands.0`～`like.commands.3`。固定 FNV-1a 哈希 account_id/video_id 到四个分区；每分区独立 Channel、exclusive consumer、手动 ACK、Prefetch=50。
+- **B 微批事务**：最多 50 条 / 等待最多 20ms；按用户视频组合保留最高 Revision。按 video_id/account_id 顺序锁定 likes；忽略 revision <= applied_revision；推进 status/applied_revision，但不修改 next_revision。只有状态改变才修改 updated_at。按视频汇总净 Delta、升序原子更新 likes_count，负数或数据库错误整体回滚。
+- **C 缓存与 ACK**：事务返回计数变化的视频 ID 后，在事务外尽力 DEL 详情与实体缓存，再 ACK 全 Batch。Redis 故障不回滚 MySQL、不阻止 ACK。Redis 是可重建的 Cache-Aside 缓存，TTL 60 秒，接受短暂陈旧及并发旧值回填；不提供 Redis 强一致承诺。
+- **连接恢复**：消费者组任一成员失败后取消并等待整组退出，固定等待 2 秒再重新 Dial、建 Channel、声明拓扑和 Consume。不引入多 Relay、动态分区、独立去重表或可靠缓存同步服务。
+- **前端**：使用安全随机数生成 128-bit Request ID，发送前按账号/视频持久化完整请求。未知结果复用原请求；同一 pair 只允许一个未解决请求。立即乐观更新，明确拒绝时回滚；受理后暂保留显示，匹配的读取或受理满 60 秒后的新读取恢复服务器状态。未确定请求不会因显示期限被丢弃。客户端不分配 Revision，存储命名空间与过期协议隔离。
+
+点赞通知目前不由命令链路产生，点赞不再独立触发热度增量；评论、关注及其通知保持各自链路。本阶段只保证点赞关系与总数的可靠处理。
+
+旧环境的消息与服务器资源不会被应用自动删除。切换前停止旧生产端、确认历史消息已核对处理，再停用旧消费实例。非空资源先备份并由管理员制定处理方案；确认无待处理业务消息后才人工清理。程序不保留旧运行协议或自动检查旧队列的兼容分支。
 
 ### 评论系统
 
@@ -168,9 +180,9 @@
 | 分片上传会话            | STRING   | `chunk_upload:<uploadID>`                         | `ChunkUploadSession`（JSON）      | 24h           | 记录文件 hash、总分片数、已上传分片，用于断点续传。           |
 | 分片上传索引            | STRING   | `chunk_upload_hash:<accountID>:<fileHash>`        | `uploadID`                        | 24h           | 同一用户同一文件 hash 可复用上传会话。                        |
 | Feed 全局时间线         | ZSET     | `feed:global_timeline`                            | member=`videoID` score=`createTime(ms)` | 常驻/修剪 | Outbox + TimelineConsumer 写入；保留最近约 1000 条热数据。    |
-| Feed 关注流缓存         | STRING   | `feed:listByFollowing:limit=<n>:accountID=<id>:before=<u>` | `ListByFollowingResponse`（JSON） | 24h | 使用 `lock:<cacheKey>` 互斥回源；关注流读多写少场景加速。     |
-| 视频实体缓存            | STRING   | `video:entity:<videoID>`                          | `Video`（JSON）                   | 1h            | Feed 批量取详情使用 L1 本地缓存 5s + L2 Redis + L3 MySQL。     |
-| 视频详情缓存            | STRING   | `video:detail:id=<videoID>`                       | `Video`（JSON）                   | 5m            | **一致性**：视频删除/更新时主动 `DEL`；**防击穿**：详情回源可加互斥锁（如 2s 锁 TTL）。 |
+| Feed 关注流缓存 | STRING | `feed:listByFollowing:limit=<n>:accountID=<id>:before=<u>` | `ListByFollowingResponse`（JSON） | 60s | 缓存命中后重新查询当前账号有效点赞状态；计数允许在 TTL 内短暂落后。 |
+| 视频实体缓存 | STRING | `video:entity:<videoID>` | `Video`（JSON） | 60s | Feed 保留 L1 本地缓存 5s；Batch COMMIT 后按视频 ID 尽力删除 Redis 实体缓存。 |
+| 视频详情缓存 | STRING | `video:detail:id=<videoID>` | `Video`（JSON） | 60s | Cache-Aside；MySQL COMMIT 后尽力 DEL，失败依赖 TTL；未命中或 Redis 故障回源 MySQL。 |
 | 实时热榜窗              | ZSET     | `hot:video:1m:<yyyyMMddHHmm>`                     | member=`videoID` score=`热度增量` | 2h            | **滚动窗口**：按分钟分桶写入；用 `ZINCRBY` 更新热度，减少单 Key 竞争。 |
 | 热榜快照                | ZSET     | `hot:video:merge:1m:<as_of>`                      | `ZUNIONSTORE` 合并结果            | 2m            | **聚合查询**：合并最近 60 个分钟窗生成快照；快照分页读取，保证分页一致性与稳定性。 |
 | 接口限流计数            | STRING   | `feedsystem:ratelimit:<scope>:<subject>`          | 计数值                            | 窗口 TTL      | 登录 10次/分钟/IP；注册 5次/小时/IP；点赞 30次/分钟/账号；评论 10次/分钟/账号；关注 20次/分钟/账号。 |
@@ -179,22 +191,35 @@
 
 | 业务模块 | Exchange / RoutingKey                                 | 事件类型      | Payload（示例字段）                                 | 消费者（Worker）   | 失败/降级策略                                                |
 | -------- | ----------------------------------------------------- | ------------- | --------------------------------------------------- | ------------------ | ------------------------------------------------------------ |
-| 点赞     | `like.events` / `like.like` `like.unlike`             | 点赞/取消点赞 | `{account_id/user_id, video_id, ts}`                | `LikeWorker` / `NotificationWorker` | 发布失败：对失败目标降级直写（MySQL 或 Redis）；点赞成功给视频作者生成通知。 |
+| 点赞命令 | `like.commands` / routing key `0`～`3` | 目标状态命令 | `{command_id,request_id,account_id,video_id,desired_liked,revision}`，command_id/revision 为字符串 | 四个 LikeCommandBatchWorker | Relay 获 Confirm ACK 且无 Return 才标记 published_at；不确定结果保留待发布。Worker 事务成功后 ACK；重投依赖 applied_revision 幂等，不按请求条数加减计数。 |
 | 评论     | `comment.events` / `comment.publish` `comment.delete` | 发布/删除评论 | `{author_id, username, video_id, comment_id?, content?, ts}` | `CommentWorker` / `NotificationWorker` | 发布失败：降级直写 MySQL；热度增量事件失败则直接更新 Redis；评论成功给视频作者生成通知。 |
 | 关注     | `social.events` / `social.follow` `social.unfollow`   | 关注/取关     | `{follower_id, vlogger_id, ts}`                     | `SocialWorker` / `NotificationWorker` | 发布失败：降级直写 MySQL；关注成功给被关注者生成通知。       |
 | 热度增量 | `video.popularity.events` / `video.popularity.update` | 热度更新      | `{video_id, delta, reason, ts}`                     | `PopularityWorker` | `UpdatePopularity` 发布失败：直接更新 Redis 热榜；并触发详情缓存失效（如需要）。 |
 | 时间线   | `video.timeline.events` / `video.timeline.publish`    | 新视频发布时间线 | `{event_id, video_id, create_time, occurred_at}` | `TimelineConsumer` | `Publish` 事务写 `outbox_msgs`；OutboxPoller 投递 MQ；TimelineConsumer 写 Redis `feed:global_timeline`。 |
-| 死信     | `dlx.events` / `#`                                    | 失败消息      | 原始消息                                           | DLX Queue          | RabbitMQ 队列声明 `x-dead-letter-exchange`；Worker 按 `x-death` 统计最多重试 3 次。 |
+| 死信 | `dlx.events` / `#` | 其他业务失败消息 | 原始消息 | DLX Queue | 其他业务沿用既有 DLX。点赞命令数据库失败时关闭消费者 Channel，让未 ACK 消息重投，不使用固定次数后 ACK 丢弃。 |
 
 # 整体架构
 
-![image-20251230003301451](picture/整体架构.png)
+```mermaid
+flowchart TD
+    UI[Vue 乐观交互 / Request ID] --> API[JWT / LikeHandler]
+    API --> A1[MySQL A1 事务受理]
+    A1 --> O[Command Outbox]
+    A1 --> HTTP[HTTP 202：命令已持久化]
+    O --> R[单 Relay / Publisher Confirm]
+    R --> MQ[Direct like.commands / 4 个固定队列]
+    MQ --> B[每分区一个 Batch Worker / 50 条或 20ms]
+    B --> TX[MySQL：关系行锁 / Revision / Delta 聚合]
+    TX --> COMMIT[COMMIT]
+    COMMIT --> DEL[Redis 详情与实体缓存尽力 DEL]
+    DEL --> ACK[RabbitMQ ACK]
+```
 
 # 流程图
 
 ## 整体流程图
 
-![整体流程](picture/整体流程.png)
+点赞请求按上方 A1/A2/B/C 单链路执行；其他账号、视频发布、评论、关注与 Feed 模块保持各自既有入口。
 
 ## 核心子流程图
 
@@ -202,9 +227,9 @@
 
 ![登录_鉴权_撤销token](picture/登录_鉴权_撤销token.png)
 
-### 子流程 B：点赞/评论 + 异步落库 + 热度更新 + 降级
+### 子流程 B：可靠点赞
 
-![点赞评论_异步落库_热度更新_降级](picture/点赞评论_异步落库_热度更新_降级.png)
+HTTP 只受理持久化命令；Relay 负责可靠发布；Batch Worker 根据最高已应用 Revision 幂等更新目标状态和计数。MQ 不可用时等待恢复，不改为同步应用点赞。详见上方 A1/A2/B/C 流程。
 
 ### 子流程 C：Feed 软鉴权 + 缓存/热榜 + 分页游标
 
@@ -228,9 +253,9 @@
 | 安全鉴权   | 软硬鉴权兼容模式            | 提供 `JWTAuth`（强制拦截）与 `SoftJWTAuth`（可不带 token；带了必须合法，否则 401）。 | 既支持匿名浏览 Feed，又支持登录态个性化（如点赞/关注状态），体验与安全兼顾。 |
 | 安全稳定   | Redis 限流                  | 使用 `INCR + PEXPIRE` 原子脚本实现窗口限流，覆盖登录、注册、点赞、评论、关注写接口。 | 降低暴力登录、刷赞、刷评论、频繁关注对系统的冲击。            |
 | 系统稳定性 | 多级存储降级设计            | Redis 为可选依赖：连接失败自动降级走 MySQL；Redis 恢复后通过请求自愈回填缓存。 | 提升环境适应性与容灾能力，基础设施异常时核心业务仍可用。     |
-| 异步架构   | RabbitMQ 事件驱动解耦       | 使用 RabbitMQ topic exchanges：`like.events`、`comment.events`、`social.events`、`video.popularity.events`；后端接口仅负责发布事件，`cmd/worker` 内的 Like/Comment/Social/Popularity Worker 异步消费并更新 MySQL/Redis。 | 削峰填谷、降低接口响应时延；写扩散与热度计算解耦，提升吞吐与可维护性，便于后续扩展更多消费者（统计、风控等）。 |
+| 异步架构 | 可靠点赞命令链路 | A1 事务受理 Request ID 并分配服务端 Revision；A2 Relay 可靠投递四分区；B Worker 合并最高版本并事务更新状态和计数；C 接通正式 API、前端和缓存失效。 | 接受至少一次投递，以版本状态机防止重复与乱序造成重复计数。 |
 | 异步架构   | Outbox 保证发布时间线        | `Publish` 事务内写 `videos` 与 `outbox_msgs`；OutboxPoller 持续投递 MQ，成功后删除消息。 | 避免视频记录已写入但时间线事件丢失的问题，提升最终一致性。   |
-| 异步架构   | MQ 异常降级直写             | 点赞/评论：尝试同时发布“写 MySQL 的队列”+“写 Redis 热度队列”；任一发布失败则对失败目标降级为直写（MySQL 或 Redis）。`UpdatePopularity` 发布失败则直接更新 Redis。 | MQ 不可用时仍能保证核心数据正确落库/可见，避免“请求成功但数据不落地”的一致性风险。 |
+| 异步架构 | 点赞命令缓冲与恢复 | 点赞 API 只提交 MySQL Command Outbox，不在 MQ 失败时降级执行点赞关系或计数写入。Relay 重发保持命令身份不变；消费者断连后重建 Connection、四个 Channel 与订阅。其他业务保留各自既有处理策略。 | 受理与应用边界明确，MQ 故障不会丢失已受理命令。 |
 | 工程交付   | Docker Compose 一键拉起     | `docker compose up -d --build` 同时拉起 MySQL、Redis、RabbitMQ、API、Worker、Frontend，并配置健康检查与 volume。 | 本地演示和部署入口统一，依赖健康状态明确。                   |
 | 工程交付   | 脚本化一键启动与可拆分运行  | `./start.sh` 默认启动后端、Worker、前端、Redis、RabbitMQ；可用 `START_FRONTEND=0`、`START_WORKER=0`、`STOP_DOCKER=1` 等开关控制。 | 提升开发体验与部署灵活性，API/Worker 可独立伸缩。             |
 | 工程质量   | 自动化基础设施              | 服务启动时执行 GORM `AutoMigrate` 自动同步账号、视频、互动、标签、私信、通知、Outbox 等表结构。 | 简化部署与迭代成本，保证 Schema 与模型一致。                  |

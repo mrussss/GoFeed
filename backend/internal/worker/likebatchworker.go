@@ -145,7 +145,7 @@ func (w *LikeCommandBatchWorker) Run(ctx context.Context) error {
 }
 
 // RunLikeCommandBatchWorkers runs exactly one consumer per fixed partition.
-// It does not start Relay or the legacy Worker. On any worker failure
+// It does not start Relay. On any worker failure
 // all four stop; the caller can restart this group after a fixed pause/reconnect.
 func RunLikeCommandBatchWorkers(ctx context.Context, conn *amqp.Connection, likes *video.LikeRepository, cache *rediscache.Client) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -190,25 +190,7 @@ func RunLikeCommandConsumers(ctx context.Context, cfg config.RabbitMQConfig, lik
 			return conn, err
 		}})
 		if err == nil {
-			// Never let legacy physical-deletion consumers race the new state machine.
-			legacy, inspectErr := conn.Channel()
-			if inspectErr == nil {
-				var q amqp.Queue
-				q, inspectErr = legacy.QueueInspect("like.events")
-				_ = legacy.Close()
-				var brokerErr *amqp.Error
-				if errors.As(inspectErr, &brokerErr) && brokerErr.Code == 404 {
-					inspectErr = nil
-				}
-				if inspectErr == nil && (q.Messages > 0 || q.Consumers > 0) {
-					inspectErr = fmt.Errorf("legacy like.events not drained: ready=%d consumers=%d; stop legacy API and drain with old Worker before cutover", q.Messages, q.Consumers)
-				}
-			}
-			if inspectErr == nil {
-				err = RunLikeCommandBatchWorkers(ctx, conn, likes, cache)
-			} else {
-				err = inspectErr
-			}
+			err = RunLikeCommandBatchWorkers(ctx, conn, likes, cache)
 			_ = conn.Close()
 		}
 		if ctx.Err() != nil {

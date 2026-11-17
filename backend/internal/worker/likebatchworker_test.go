@@ -88,7 +88,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sqlDB.Close()
-	// Migration must preserve historical video data without creating projection schema.
+	// Migration must preserve historical video data and counts.
 	if err := db.Exec(`CREATE TABLE videos(id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,author_id BIGINT UNSIGNED NOT NULL,
  username VARCHAR(255) NOT NULL,title VARCHAR(255) NOT NULL,description VARCHAR(255),play_url VARCHAR(255) NOT NULL,
  cover_url VARCHAR(255) NOT NULL,create_time DATETIME(3),likes_count BIGINT NOT NULL DEFAULT 0,popularity BIGINT NOT NULL DEFAULT 0) ENGINE=InnoDB`).Error; err != nil {
@@ -103,9 +103,6 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 	var legacy video.Video
 	if err := db.First(&legacy, 99).Error; err != nil || legacy.LikesCount != 7 || legacy.Popularity != 17 {
 		t.Fatalf("legacy video migration: %+v %v", legacy, err)
-	}
-	if db.Migrator().HasColumn(&video.Video{}, "likes_version") || db.Migrator().HasTable("video_projection_dirty") {
-		t.Fatal("migration created obsolete projection schema")
 	}
 	ctx := context.Background()
 	repo := video.NewLikeRepository(db)
@@ -560,39 +557,4 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			}
 		})
 	})
-	t.Run("migration_retains_obsolete_schema", func(t *testing.T) {
-		// Only this disposable test database gets legacy projection schema.
-		reset(t)
-		for _, sql := range []string{
-			"ALTER TABLE videos ADD COLUMN likes_version BIGINT UNSIGNED NOT NULL DEFAULT 0",
-			"CREATE TABLE video_projection_dirty(video_id BIGINT UNSIGNED PRIMARY KEY,version BIGINT UNSIGNED NOT NULL)",
-			"INSERT INTO video_projection_dirty VALUES(1,9)",
-		} {
-			if err := db.Exec(sql).Error; err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := appdb.AutoMigrate(db); err != nil {
-			t.Fatal(err)
-		}
-		if !db.Migrator().HasColumn(&video.Video{}, "likes_version") || !db.Migrator().HasTable("video_projection_dirty") {
-			t.Fatal("migration removed legacy projection schema")
-		}
-		seedVideo(t, 1, 0)
-		seedLike(t, 1, 1, 0, 1, 0)
-		if _, err := repo.ApplyLikeCommandBatch(ctx, []rabbitmq.LikeCommandEvent{event(1, 1, 1, true)}); err != nil {
-			t.Fatal(err)
-		}
-		var legacyVersion, dirtyVersion uint64
-		if err := db.Raw("SELECT likes_version FROM videos WHERE id=1").Scan(&legacyVersion).Error; err != nil {
-			t.Fatal(err)
-		}
-		if err := db.Raw("SELECT version FROM video_projection_dirty WHERE video_id=1").Scan(&dirtyVersion).Error; err != nil {
-			t.Fatal(err)
-		}
-		if getVideo(t, 1).LikesCount != 1 || legacyVersion != 0 || dirtyVersion != 9 {
-			t.Fatal("batch changed legacy projection data or failed to update count")
-		}
-	})
-
 }

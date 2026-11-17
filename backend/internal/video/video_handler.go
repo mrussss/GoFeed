@@ -239,16 +239,3 @@ func (vh *VideoHandler) GetDetail(c *gin.Context) {
 	}
 	c.JSON(200, video)
 }
-
-func (vh *VideoHandler) UpdateLikesCount(c *gin.Context) {
-	var req UpdateLikesCountRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
-		return
-	}
-	if err := vh.service.UpdateLikesCount(c.Request.Context(), req.ID, req.LikesCount); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(200, gin.H{"message": "likes count updated"})
-}

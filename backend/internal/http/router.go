@@ -201,9 +201,6 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 	// SSE notification
 	if rmq != nil {
 		if notifCh, err := rmq.NewChannel(); err == nil {
-			if err := rabbitmq.DeclareTopic(notifCh, "like.events", "notification.like", "like.like"); err != nil {
-				log.Printf("notification like topic init failed: %v", err)
-			}
 			if err := rabbitmq.DeclareTopic(notifCh, "comment.events", "notification.comment", "comment.publish"); err != nil {
 				log.Printf("notification comment topic init failed: %v", err)
 			}
@@ -223,7 +220,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 			hub := sseHub
 			ctx := context.Background()
 			// 每个 notification worker 独立 Channel + 自动重连
-			for _, q := range []string{"notification.like", "notification.comment", "notification.social"} {
+			for _, q := range []string{"notification.comment", "notification.social"} {
 				go func(queue string) {
 					for {
 						ch, err := rmq.NewChannel()

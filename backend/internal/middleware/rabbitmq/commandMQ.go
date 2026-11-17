@@ -18,8 +18,7 @@ const (
 	LikeCommandPartitions = 4
 )
 
-// LikeCommandEvent is separate from Phase 1 LikeEvent. All retry-identifying
-// fields come from the committed outbox; no fresh EventID or revision is generated.
+// LikeCommandEvent carries the committed outbox identity and server revision.
 type LikeCommandEvent struct {
 	CommandID    uint64 `json:"command_id,string"`
 	RequestID    string `json:"request_id"`
@@ -36,7 +35,7 @@ func (event LikeCommandEvent) Validate() error {
 	return nil
 }
 
-// LikeCommandPartition is the fixed routing contract for the later consumer:
+// LikeCommandPartition is the fixed routing contract shared by Relay and consumers:
 // FNV-1a 64 over two big-endian uint64 values (account, video), modulo four.
 func LikeCommandPartition(accountID, videoID uint) int {
 	var key [16]byte
@@ -68,17 +67,14 @@ func DeclareLikeCommands(ch *amqp.Channel) error {
 }
 
 // LikeCommandMQ owns one connection/channel and allows one in-flight confirm.
-// Unlike Phase 1's API publisher, each call actually publishes: if MySQL marking
-// failed, Relay must be allowed to redeliver the same stable command identity.
-type LikeCommandMQ struct{ publisher *LikeMQ }
+// Every call publishes: a failed MySQL mark requires redelivery of the same identity.
+type LikeCommandMQ struct{ publisher *confirmedPublisher }
 
 func NewLikeCommandMQ(cfg config.RabbitMQConfig) *LikeCommandMQ {
-	publisher := NewLikeMQ(cfg)
-	publisher.declareTopology = DeclareLikeCommands
-	return &LikeCommandMQ{publisher: publisher}
+	return &LikeCommandMQ{publisher: newConfirmedPublisher(cfg, DeclareLikeCommands)}
 }
 
-func (m *LikeCommandMQ) Close() { m.publisher.Close() }
+func (m *LikeCommandMQ) Close() { m.publisher.close() }
 
 func (m *LikeCommandMQ) Publish(ctx context.Context, event LikeCommandEvent) error {
 	if err := event.Validate(); err != nil {

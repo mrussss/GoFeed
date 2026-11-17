@@ -26,10 +26,6 @@ const (
 	socialQueue      = "social.events"
 	socialBindingKey = "social.*"
 
-	likeExchange   = "like.events"
-	likeQueue      = "like.events"
-	likeBindingKey = "like.*"
-
 	commentExchange   = "comment.events"
 	commentQueue      = "comment.events"
 	commentBindingKey = "comment.*"
@@ -282,40 +278,6 @@ func declarePopularityTopology(ch *amqp.Channel) error {
 		q.Name,
 		popularityBindingKey,
 		popularityExchange,
-		false,
-		nil,
-	)
-}
-
-func declareLikeTopology(ch *amqp.Channel) error {
-	if err := ch.ExchangeDeclare(
-		likeExchange,
-		"topic",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	); err != nil {
-		return err
-	}
-
-	q, err := ch.QueueDeclare(
-		likeQueue,
-		true,
-		false,
-		false,
-		false,
-		amqp.Table{"x-dead-letter-exchange": mqrabbit.DLXExchange},
-	)
-	if err != nil {
-		return err
-	}
-
-	return ch.QueueBind(
-		q.Name,
-		likeBindingKey,
-		likeExchange,
 		false,
 		nil,
 	)

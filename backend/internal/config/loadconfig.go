@@ -39,7 +39,6 @@ type RedisConfig struct {
 type RabbitMQConfig struct {
 	VHost                string `yaml:"vhost"`
 	LikePublishTimeoutMS int    `yaml:"like_publish_timeout_ms"`
-	LikeEventLimit       int    `yaml:"like_event_limit"`
 	Host                 string `yaml:"host"`
 	Port                 int    `yaml:"port"`
 	Username             string `yaml:"username"`

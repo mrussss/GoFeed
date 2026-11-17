@@ -114,26 +114,13 @@ func TestLikeCommandMySQL(t *testing.T) {
 		return n
 	}
 
-	t.Run("migration_and_phase1_defaults", func(t *testing.T) {
+	t.Run("migration_preserves_existing_likes", func(t *testing.T) {
 		old := state(t, 1, 1)
 		if old.ID != 42 || old.Status != 1 || old.NextRevision != 0 || old.AppliedRevision != 0 || !old.UpdatedAt.Equal(old.CreatedAt) {
 			t.Fatalf("legacy record changed: %+v", old)
 		}
-		created, err := repo.LikeIgnoreDuplicate(ctx, &video.Like{AccountID: 2, VideoID: 2})
-		if err != nil || !created || state(t, 2, 2).Status != 1 {
-			t.Fatalf("Phase 1 INSERT: created=%v err=%v", created, err)
-		}
-		if again, err := repo.LikeIgnoreDuplicate(ctx, &video.Like{AccountID: 2, VideoID: 2}); err != nil || again {
-			t.Fatalf("Phase 1 duplicate: %v %v", again, err)
-		}
-		if deleted, err := repo.DeleteByVideoAndAccount(ctx, 2, 2); err != nil || !deleted {
-			t.Fatalf("Phase 1 DELETE: %v %v", deleted, err)
-		}
-		if count(t, &video.Like{}, 2) != 0 {
-			t.Fatal("Phase 1 physical deletion was changed")
-		}
 		// Receiving an unlike command must not apply it or physically delete an
-		// active legacy relation before the later Worker phase.
+		// active existing relation before the Batch Worker applies it.
 		if _, err := service.AcceptLikeCommand(ctx, 1, video.LikeCommandRequest{RequestID: "legacy-unlike", VideoID: 1, DesiredLiked: false}); err != nil {
 			t.Fatal(err)
 		}

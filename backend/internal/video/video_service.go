@@ -193,13 +193,6 @@ func (vs *VideoService) GetDetail(ctx context.Context, id uint) (*Video, error) 
 	return video, nil
 }
 
-func (vs *VideoService) UpdateLikesCount(ctx context.Context, id uint, likesCount int64) error {
-	if err := vs.repo.UpdateLikesCount(ctx, id, likesCount); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (vs *VideoService) UpdatePopularity(ctx context.Context, id uint, change int64) error {
 	if err := vs.repo.UpdatePopularity(ctx, id, change); err != nil {
 		return err

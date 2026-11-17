@@ -11,7 +11,7 @@ type Like struct {
 	VideoID   uint      `gorm:"uniqueIndex:idx_like_video_account;not null" json:"video_id"`
 	AccountID uint      `gorm:"uniqueIndex:idx_like_video_account;not null" json:"account_id"`
 	CreatedAt time.Time `json:"created_at"`
-	// Default 1 preserves existing rows and Phase 1 Worker inserts. Command
+	// Default 1 preserves existing rows during migration. Command
 	// acceptance explicitly creates inactive (status=0) rows without applying intent.
 	Status          uint8     `gorm:"type:tinyint unsigned;not null;default:1" json:"status"`
 	NextRevision    uint64    `gorm:"type:bigint unsigned;not null;default:0" json:"next_revision,string"`
@@ -23,8 +23,7 @@ type LikeRequest struct {
 	VideoID uint `json:"video_id"`
 }
 
-// LikeCommandRequest is deliberately separate from the Phase 1 HTTP request.
-// Revision is not accepted from the client; only MySQL may allocate it.
+// LikeCommandRequest contains intent; only MySQL may allocate its revision.
 type LikeCommandRequest struct {
 	RequestID    string `json:"request_id"`
 	VideoID      uint   `json:"video_id"`

@@ -34,11 +34,6 @@ type GetDetailRequest struct {
 	ID uint `json:"id"`
 }
 
-type UpdateLikesCountRequest struct {
-	ID         uint  `json:"id"`
-	LikesCount int64 `json:"likes_count"`
-}
-
 type OutboxMsg struct {
 	ID         uint      `gorm:"primaryKey"`
 	VideoID    uint      `gorm:"index"`

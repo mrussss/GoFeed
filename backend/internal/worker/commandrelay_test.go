@@ -422,16 +422,6 @@ func TestLikeCommandRelay(t *testing.T) {
 			}
 			assertPending(t, command.ID)
 		})
-		// No old exchange or queue is declared by this path. A passive lookup on a
-		// disposable probe channel verifies isolation without creating legacy topology.
-		probe, err := conn.Channel()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer probe.Close()
-		if _, err := probe.QueueDeclarePassive("like.events", true, false, false, false, nil); err == nil {
-			t.Fatal("new publisher declared the old queue")
-		}
-		t.Log("real routing, persistent identity, confirm, Return rejection, duplicate retry, reconnect and legacy isolation verified")
+		t.Log("real routing, persistent identity, confirm, Return rejection, duplicate retry, and reconnect verified")
 	})
 }
