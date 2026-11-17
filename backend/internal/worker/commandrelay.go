@@ -60,10 +60,14 @@ func (r *LikeCommandRelay) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if _, err := r.RunOnce(ctx); err != nil && ctx.Err() == nil {
+		published, err := r.RunOnce(ctx)
+		if err != nil && ctx.Err() == nil {
 			log.Printf("like command relay: %v", err)
 		}
-		// A fixed pause on every round also bounds retry rate for persistent failures.
+		if err == nil && published == 100 {
+			continue
+		}
+		// Pause when caught up or after any failure; drain full successful rounds immediately.
 		timer := time.NewTimer(r.interval)
 		select {
 		case <-ctx.Done():

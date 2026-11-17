@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -176,6 +177,75 @@ func TestLikeCommandRelay(t *testing.T) {
 			t.Fatalf("retry/cancel: attempts=%d err=%v", attempts, err)
 		}
 		assertPending(t, c.ID)
+	})
+
+	t.Run("run_drains_backlog_without_interval_wait", func(t *testing.T) {
+		reset(t)
+		commands := make([]video.CommandOutbox, 105)
+		for i := range commands {
+			commands[i] = video.CommandOutbox{AccountID: uint(i + 100), RequestID: fmt.Sprint(i), VideoID: 1, Revision: 1}
+		}
+		if err := db.Create(&commands).Error; err != nil {
+			t.Fatal(err)
+		}
+		runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		finished := make(chan struct{})
+		var runErr error
+		p := commandPublisherFunc(func(context.Context, rabbitmq.LikeCommandEvent) error { return nil })
+		go func() { runErr = worker.NewLikeCommandRelay(db, p, time.Hour).Run(runCtx); close(finished) }()
+		defer func() { cancel(); <-finished }()
+		for {
+			var pending int64
+			if err := db.Model(&video.CommandOutbox{}).Where("published_at IS NULL").Count(&pending).Error; err != nil {
+				t.Fatal(err)
+			}
+			if pending == 0 {
+				break
+			}
+			select {
+			case <-finished:
+				t.Fatalf("backlog not drained before cancellation: pending=%d err=%v", pending, runErr)
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+		cancel()
+		<-finished
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatal(runErr)
+		}
+	})
+	t.Run("run_empty_queue_waits_and_cancels", func(t *testing.T) {
+		reset(t)
+		var queries atomic.Int32
+		firstQuery := make(chan struct{})
+		if err := db.Callback().Query().After("gorm:query").Register("a2_count_empty_polls", func(tx *gorm.DB) {
+			if tx.Statement.Table == "command_outbox" && queries.Add(1) == 1 {
+				close(firstQuery)
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		defer db.Callback().Query().Remove("a2_count_empty_polls")
+		runCtx, cancel := context.WithTimeout(ctx, time.Second)
+		finished := make(chan struct{})
+		var runErr error
+		p := commandPublisherFunc(func(context.Context, rabbitmq.LikeCommandEvent) error {
+			t.Error("empty queue published a message")
+			return nil
+		})
+		go func() { runErr = worker.NewLikeCommandRelay(db, p, time.Hour).Run(runCtx); close(finished) }()
+		defer func() { cancel(); <-finished }()
+		select {
+		case <-firstQuery:
+		case <-finished:
+			t.Fatalf("empty relay stopped unexpectedly: %v", runErr)
+		}
+		time.Sleep(40 * time.Millisecond)
+		cancel()
+		<-finished
+		if queries.Load() != 1 || !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("empty queue busy loop/cancellation: queries=%d err=%v", queries.Load(), runErr)
+		}
 	})
 
 	t.Run("hundred_row_limit_restart_and_late_commit", func(t *testing.T) {
