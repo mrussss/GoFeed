@@ -225,6 +225,30 @@ func TestLikeCommandMySQL(t *testing.T) {
 		}
 	})
 
+	t.Run("service_existing_video", func(t *testing.T) {
+		if err := db.Create(&video.Video{ID: 80, AuthorID: 80, Username: "test", Title: "A1 existing video", PlayURL: "test.mp4", CoverURL: "test.jpg"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		checkedService := video.NewLikeService(repo, video.NewVideoRepository(db), nil, nil)
+		command, err := checkedService.AcceptLikeCommand(ctx, 80, video.LikeCommandRequest{RequestID: "video-exists", VideoID: 80, DesiredLiked: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if command == nil || command.Revision != 1 || count(t, &video.Like{}, 80) != 1 || count(t, &video.CommandOutbox{}, 80) != 1 {
+			t.Fatalf("existing video not accepted: %+v", command)
+		}
+	})
+	t.Run("service_missing_video_no_writes", func(t *testing.T) {
+		checkedService := video.NewLikeService(repo, video.NewVideoRepository(db), nil, nil)
+		command, err := checkedService.AcceptLikeCommand(ctx, 81, video.LikeCommandRequest{RequestID: "video-missing", VideoID: 999999, DesiredLiked: true})
+		if !errors.Is(err, gorm.ErrRecordNotFound) || command != nil {
+			t.Fatalf("missing video accepted: command=%+v err=%v", command, err)
+		}
+		if count(t, &video.Like{}, 81) != 0 || count(t, &video.CommandOutbox{}, 81) != 0 {
+			t.Fatal("missing video created likes or outbox records")
+		}
+	})
+
 	type result struct {
 		command *video.CommandOutbox
 		err     error

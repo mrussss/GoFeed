@@ -74,5 +74,14 @@ func (s *LikeService) ListLikedVideos(ctx context.Context, accountID uint) ([]Vi
 // AcceptLikeCommand is the independent A1 entry point. Accept continues to
 // use the Phase 1 publisher until A2 explicitly switches the HTTP contract.
 func (s *LikeService) AcceptLikeCommand(ctx context.Context, accountID uint, req LikeCommandRequest) (*CommandOutbox, error) {
+	if s.VideoRepo != nil {
+		ok, err := s.VideoRepo.IsExist(ctx, req.VideoID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, gorm.ErrRecordNotFound
+		}
+	}
 	return s.repo.AcceptLikeCommand(ctx, accountID, req)
 }
