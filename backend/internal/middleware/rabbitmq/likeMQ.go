@@ -20,6 +20,7 @@ const (
 	likeBindingKey = "like.*"
 	likeLikeRK     = "like.like"
 	likeUnlikeRK   = "like.unlike"
+	likeReceiptTTL = 10 * time.Minute
 )
 
 // PublishError distinguishes definite rejection from an uncertain delivery.
@@ -70,9 +71,15 @@ type LikeMQ struct {
 	channelClose    chan *amqp.Error
 	connectionClose chan *amqp.Error
 	closed          bool
-	// Phase 1 conflict guard, scoped to this API process. Never evict IDs silently.
-	// Durable, multi-process conflict detection belongs to the Phase 2 Inbox.
-	payloads map[string][32]byte
+	// Short-lived, bounded receipts only. Durable cross-process deduplication
+	// and conflict detection belong to the Phase 2 Inbox.
+	payloads map[string]likePublication
+}
+
+type likePublication struct {
+	digest    [32]byte
+	expires   time.Time
+	confirmed bool
 }
 
 func NewLikeMQ(cfg config.RabbitMQConfig) *LikeMQ {
@@ -82,7 +89,7 @@ func NewLikeMQ(cfg config.RabbitMQConfig) *LikeMQ {
 	if cfg.LikeEventLimit <= 0 {
 		cfg.LikeEventLimit = 100000
 	}
-	return &LikeMQ{cfg: cfg, gate: make(chan struct{}, 1), payloads: make(map[string][32]byte)}
+	return &LikeMQ{cfg: cfg, gate: make(chan struct{}, 1), payloads: make(map[string]likePublication)}
 }
 
 func (l *LikeMQ) disconnect() {
@@ -143,44 +150,66 @@ func (l *LikeMQ) connect(ctx context.Context) error {
 	return nil
 }
 
-func (l *LikeMQ) Publish(ctx context.Context, evt LikeEvent) error {
+// Publish reports whether this call newly confirmed the event. A matching
+// cached receipt returns false, nil: the previous broker ACK remains valid,
+// and callers must not publish the same transitional heat effect again.
+func (l *LikeMQ) Publish(ctx context.Context, evt LikeEvent) (bool, error) {
 	if err := evt.Validate(); err != nil {
-		return err
+		return false, err
 	}
 	if l == nil {
-		return &PublishError{Code: "publisher_unavailable"}
+		return false, &PublishError{Code: "publisher_unavailable"}
 	}
 	select {
 	case l.gate <- struct{}{}:
 		defer func() { <-l.gate }()
 	default:
-		return &PublishError{Code: "publisher_busy"}
+		return false, &PublishError{Code: "publisher_busy"}
 	}
 	if l.closed {
-		return &PublishError{Code: "publisher_unavailable"}
+		return false, &PublishError{Code: "publisher_unavailable"}
 	}
 	body, err := json.Marshal(evt)
 	if err != nil {
-		return err
+		return false, err
 	}
 	digest := sha256.Sum256(body)
-	if prior, ok := l.payloads[evt.EventID]; ok {
-		if prior != digest {
-			return &PublishError{Code: "event_payload_conflict"}
+	now := time.Now()
+	if prior, ok := l.payloads[evt.EventID]; ok && now.Before(prior.expires) {
+		if prior.digest != digest {
+			return false, &PublishError{Code: "event_payload_conflict"}
+		}
+		if prior.confirmed {
+			return false, nil
 		}
 	} else {
+		// No LRU or background cache: drop expired receipts when at capacity, then
+		// evict the oldest if still full. The limit must never permanently stop likes.
 		if len(l.payloads) >= l.cfg.LikeEventLimit {
-			return &PublishError{Code: "event_guard_full"}
+			var oldestID string
+			var oldestExpiry time.Time
+			for id, record := range l.payloads {
+				if !now.Before(record.expires) {
+					delete(l.payloads, id)
+					continue
+				}
+				if oldestID == "" || record.expires.Before(oldestExpiry) {
+					oldestID, oldestExpiry = id, record.expires
+				}
+			}
+			if len(l.payloads) >= l.cfg.LikeEventLimit {
+				delete(l.payloads, oldestID)
+			}
 		}
-		l.payloads[evt.EventID] = digest
+		l.payloads[evt.EventID] = likePublication{digest: digest, expires: now.Add(likeReceiptTTL)}
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(l.cfg.LikePublishTimeoutMS)*time.Millisecond)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
-		return &PublishError{Code: "publish_cancelled"}
+		return false, &PublishError{Code: "publish_cancelled"}
 	}
 	if err := l.connect(ctx); err != nil {
-		return &PublishError{Code: "publisher_unavailable"}
+		return false, &PublishError{Code: "publisher_unavailable"}
 	}
 	deadline, _ := ctx.Deadline()
 	_ = l.wire.SetDeadline(deadline)
@@ -206,20 +235,21 @@ func (l *LikeMQ) Publish(ctx context.Context, evt LikeEvent) error {
 		ContentType: "application/json", DeliveryMode: amqp.Persistent, MessageId: evt.EventID, Timestamp: evt.OccurredAt, Body: body,
 	}); err != nil {
 		l.disconnect()
-		return &PublishError{Code: "publish_unknown", Unknown: true}
+		return false, &PublishError{Code: "publish_unknown", Unknown: true}
 	}
 	err = waitLikeConfirm(ctx, sequence, evt.EventID, l.confirms, l.returns, l.channelClose, l.connectionClose)
 	if err != nil {
 		l.disconnect()
-		return err
+		return false, err
 	}
 	// Do not report success if cancellation or connection failure raced the ACK.
 	if ctx.Err() != nil || l.conn.IsClosed() || l.ch.IsClosed() {
 		l.disconnect()
-		return &PublishError{Code: "connection_lost", Unknown: true}
+		return false, &PublishError{Code: "connection_lost", Unknown: true}
 	}
 	_ = wire.SetDeadline(time.Time{})
-	return nil
+	l.payloads[evt.EventID] = likePublication{digest: digest, expires: time.Now().Add(likeReceiptTTL), confirmed: true}
+	return true, nil
 }
 
 func waitLikeConfirm(ctx context.Context, sequence uint64, id string, confirms <-chan amqp.Confirmation, returns <-chan amqp.Return, channelClose, connectionClose <-chan *amqp.Error) (result error) {

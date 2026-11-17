@@ -3,8 +3,10 @@ package video
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"feedsystem_video_go/internal/config"
 	"feedsystem_video_go/internal/middleware/rabbitmq"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"strconv"
@@ -16,9 +18,11 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-type ingressPublisher func(context.Context, rabbitmq.LikeEvent) error
+type ingressPublisher func(context.Context, rabbitmq.LikeEvent) (bool, error)
 
-func (f ingressPublisher) Publish(ctx context.Context, e rabbitmq.LikeEvent) error { return f(ctx, e) }
+func (f ingressPublisher) Publish(ctx context.Context, e rabbitmq.LikeEvent) (bool, error) {
+	return f(ctx, e)
+}
 
 func ingressEvent() rabbitmq.LikeEvent {
 	return rabbitmq.LikeEvent{SchemaVersion: 2, EventID: "00112233445566778899aabbccddeeff", UserID: 7, VideoID: 9, Revision: "12", DesiredLiked: true, OccurredAt: time.Date(2026, 11, 16, 1, 2, 3, 0, time.UTC)}
@@ -61,14 +65,14 @@ func TestLikeIngressAcceptance(t *testing.T) {
 		{"event_payload_conflict", false, 409, "rejected"},
 	} {
 		t.Run(tc.status+"/"+tc.code, func(t *testing.T) {
-			r := ingressRouter(ingressPublisher(func(_ context.Context, e rabbitmq.LikeEvent) error {
+			r := ingressRouter(ingressPublisher(func(_ context.Context, e rabbitmq.LikeEvent) (bool, error) {
 				if e != ingressEvent() {
 					t.Errorf("HTTP envelope changed: %+v", e)
 				}
 				if tc.code != "" {
-					return &rabbitmq.PublishError{Code: tc.code, Unknown: tc.unknown}
+					return false, &rabbitmq.PublishError{Code: tc.code, Unknown: tc.unknown}
 				}
-				return nil
+				return true, nil
 			}))
 			rec := ingressRequest(t, r, ingressEvent())
 			var result map[string]any
@@ -80,7 +84,7 @@ func TestLikeIngressAcceptance(t *testing.T) {
 	}
 	t.Run("wait_for_publisher", func(t *testing.T) {
 		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan *httptest.ResponseRecorder, 1)
-		r := ingressRouter(ingressPublisher(func(context.Context, rabbitmq.LikeEvent) error { close(entered); <-release; return nil }))
+		r := ingressRouter(ingressPublisher(func(context.Context, rabbitmq.LikeEvent) (bool, error) { close(entered); <-release; return true, nil }))
 		go func() { done <- ingressRequest(t, r, ingressEvent()) }()
 		<-entered
 		select {
@@ -94,13 +98,34 @@ func TestLikeIngressAcceptance(t *testing.T) {
 		}
 	})
 	t.Run("client_user_id_rejected", func(t *testing.T) {
-		r := ingressRouter(ingressPublisher(func(context.Context, rabbitmq.LikeEvent) error { t.Error("must not publish"); return nil }))
+		r := ingressRouter(ingressPublisher(func(context.Context, rabbitmq.LikeEvent) (bool, error) {
+			t.Error("must not publish")
+			return false, nil
+		}))
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, httptest.NewRequest("POST", "/like/like", strings.NewReader(`{"user_id":999}`)))
 		if rec.Code != 400 {
 			t.Fatal(rec.Code)
 		}
 	})
+}
+
+// A cancelled call performs no network I/O. A tiny receipt limit reproduces
+// the former lifetime cap without requiring 100000 events or a live broker.
+func TestLikeIngressReceiptCapacity(t *testing.T) {
+	p := rabbitmq.NewLikeMQ(config.RabbitMQConfig{LikeEventLimit: 2})
+	defer p.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 8; i++ {
+		evt := ingressEvent()
+		evt.EventID = fmt.Sprintf("%032x", i)
+		_, err := p.Publish(ctx, evt)
+		var publishErr *rabbitmq.PublishError
+		if !errors.As(err, &publishErr) || publishErr.Code != "publish_cancelled" {
+			t.Fatalf("event %d blocked by receipt capacity: %v", i, err)
+		}
+	}
 }
 
 // Run only against a disposable vhost. Never publishes to the application's vhost.
@@ -126,7 +151,15 @@ func TestLikeIngressRealRabbitMQ(t *testing.T) {
 	defer ch.Close()
 	publisher := rabbitmq.NewLikeMQ(cfg)
 	defer publisher.Close()
-	r := ingressRouter(publisher)
+	heat, err := rabbitmq.NewPopularityMQ(&rabbitmq.RabbitMQ{Conn: conn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("accountID", uint(7)) })
+	handler := NewLikeHandler(NewLikeService(nil, nil, publisher, heat))
+	r.POST("/like/like", handler.Like)
+	r.POST("/like/unlike", handler.Unlike)
 	evt := ingressEvent()
 	if rec := ingressRequest(t, r, evt); rec.Code != 202 {
 		t.Fatalf("real confirm: %d %s", rec.Code, rec.Body.String())
@@ -138,6 +171,34 @@ func TestLikeIngressRealRabbitMQ(t *testing.T) {
 	var got rabbitmq.LikeEvent
 	if err = json.Unmarshal(d.Body, &got); err != nil || got != evt {
 		t.Fatalf("event changed: %+v %v", got, err)
+	}
+	if _, ok, err := ch.Get("notification.like", true); err != nil || !ok {
+		t.Fatalf("first notification delivery: %v", err)
+	}
+	// Transitional heat publishing does not use Confirm; allow broker processing
+	// on its separate channel before checking the first delivery.
+	for deadline := time.Now().Add(time.Second); ; {
+		_, ok, err := ch.Get("video.popularity.events", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first heat delivery missing")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for i := 0; i < 2; i++ {
+		if rec := ingressRequest(t, r, evt); rec.Code != 202 {
+			t.Fatalf("confirmed retry: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	for _, queue := range []string{"like.events", "notification.like", "video.popularity.events"} {
+		if _, ok, err := ch.Get(queue, true); err != nil || ok {
+			t.Fatalf("confirmed retry duplicated delivery to %s: present=%v err=%v", queue, ok, err)
+		}
 	}
 	// Confirms also ACK unroutable messages. Remove the only unlike binding and
 	// verify that a real basic.return + ACK cannot become HTTP 202.
@@ -168,5 +229,5 @@ func TestLikeIngressRealRabbitMQ(t *testing.T) {
 	if rec := ingressRequest(t, r, evt); rec.Code != 202 {
 		t.Fatalf("channel recovery: %d %s", rec.Code, rec.Body.String())
 	}
-	t.Log("real ACK, persistent MessageId/body, Return+ACK rejection, channel close, reconnect and payload conflict verified in isolated vhost")
+	t.Log("real ACK, persistent MessageId/body, Return+ACK rejection, channel close, reconnect, confirmed-retry side effects and payload conflict verified in isolated vhost")
 }

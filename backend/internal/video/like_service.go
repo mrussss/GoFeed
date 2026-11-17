@@ -9,7 +9,7 @@ import (
 )
 
 type LikePublisher interface {
-	Publish(context.Context, rabbitmq.LikeEvent) error
+	Publish(context.Context, rabbitmq.LikeEvent) (bool, error)
 }
 
 type LikeService struct {
@@ -41,9 +41,15 @@ func (s *LikeService) Accept(ctx context.Context, evt rabbitmq.LikeEvent) error 
 	if s.likeMQ == nil {
 		return &rabbitmq.PublishError{Code: "publisher_unavailable"}
 	}
-	if err := s.likeMQ.Publish(ctx, evt); err != nil {
+	newlyConfirmed, err := s.likeMQ.Publish(ctx, evt)
+	if err != nil {
 		return err
 	}
+	// Reuse the broker receipt without repeating the transitional heat publish.
+	if !newlyConfirmed {
+		return nil
+	}
+
 	// Transitional Phase 1 heat path. The accepted like cannot be revoked if this
 	// independent publish fails. No direct Redis/MySQL fallback is permitted.
 	if s.popularityMQ != nil {
