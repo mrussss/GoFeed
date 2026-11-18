@@ -65,19 +65,10 @@ func (s *CommentService) Publish(ctx context.Context, comment *Comment) error {
 
 	// Fallback: direct MySQL write when comment MQ publish fails.
 	if !mysqlEnqueued {
-		if err := s.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			if err := tx.Select("id").First(&Video{}, comment.VideoID).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return errors.New("video not found")
-				}
-				return err
+		if err := s.repo.CreateComment(ctx, comment); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New("video not found")
 			}
-			if err := tx.Create(comment).Error; err != nil {
-				return err
-			}
-			return tx.Model(&Video{}).Where("id = ?", comment.VideoID).
-				UpdateColumn("popularity", gorm.Expr("popularity + 1")).Error
-		}); err != nil {
 			return err
 		}
 	}

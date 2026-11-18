@@ -11,21 +11,21 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"gorm.io/gorm"
 )
 
 type CommentWorker struct {
 	ch       *amqp.Channel
 	comments *video.CommentRepository
-	videos   *video.VideoRepository
 	queue    string
 }
 
-func NewCommentWorker(ch *amqp.Channel, comments *video.CommentRepository, videos *video.VideoRepository, queue string) *CommentWorker {
-	return &CommentWorker{ch: ch, comments: comments, videos: videos, queue: queue}
+func NewCommentWorker(ch *amqp.Channel, comments *video.CommentRepository, queue string) *CommentWorker {
+	return &CommentWorker{ch: ch, comments: comments, queue: queue}
 }
 
 func (w *CommentWorker) Run(ctx context.Context) error {
-	if w == nil || w.ch == nil || w.comments == nil || w.videos == nil {
+	if w == nil || w.ch == nil || w.comments == nil {
 		return errors.New("comment worker is not initialized")
 	}
 	if w.queue == "" {
@@ -103,24 +103,17 @@ func (w *CommentWorker) applyPublish(ctx context.Context, evt *rabbitmq.CommentE
 		return nil
 	}
 
-	ok, err := w.videos.IsExist(ctx, evt.VideoID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil
-	}
-
 	c := &video.Comment{
 		Username: strings.TrimSpace(evt.Username),
 		VideoID:  evt.VideoID,
 		AuthorID: evt.AuthorID,
 		Content:  strings.TrimSpace(evt.Content),
 	}
-	if err := w.comments.CreateComment(ctx, c); err != nil {
-		return err
+	err := w.comments.CreateComment(ctx, c)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
 	}
-	return w.videos.ChangePopularity(ctx, evt.VideoID, 1)
+	return err
 }
 
 func (w *CommentWorker) applyDelete(ctx context.Context, evt *rabbitmq.CommentEvent) error {

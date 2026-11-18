@@ -176,7 +176,6 @@ func main() {
 
 	// 准备 repo
 	socialRepo := social.NewSocialRepository(sqlDB)
-	videoRepo := video.NewVideoRepository(sqlDB)
 	commentRepo := video.NewCommentRepository(sqlDB)
 
 	pprofServer, err := observability.NewPprofServer(
@@ -197,7 +196,7 @@ func main() {
 	})
 
 	go runWorkerWithRetry(ctx, "CommentWorker", conn, func(ch *amqp.Channel) error {
-		return worker.NewCommentWorker(ch, commentRepo, videoRepo, commentQueue).Run(ctx)
+		return worker.NewCommentWorker(ch, commentRepo, commentQueue).Run(ctx)
 	})
 	if cache != nil {
 		go runWorkerWithRetry(ctx, "PopularityWorker", conn, func(ch *amqp.Channel) error {

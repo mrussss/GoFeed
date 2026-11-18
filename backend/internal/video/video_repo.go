@@ -77,10 +77,14 @@ func (vr *VideoRepository) UpdatePopularity(ctx context.Context, id uint, change
 }
 
 func (vr *VideoRepository) ChangePopularity(ctx context.Context, id uint, change int64) error {
-	if err := vr.db.WithContext(ctx).Model(&Video{}).
+	result := vr.db.WithContext(ctx).Model(&Video{}).
 		Where("id = ?", id).
-		UpdateColumn("popularity", gorm.Expr("GREATEST(popularity + ?, 0)", change)).Error; err != nil {
-		return err
+		UpdateColumn("popularity", gorm.Expr("GREATEST(popularity + ?, 0)", change))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
 	}
 	return nil
 }

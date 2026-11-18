@@ -15,7 +15,12 @@ func NewCommentRepository(db *gorm.DB) *CommentRepository {
 }
 
 func (r *CommentRepository) CreateComment(ctx context.Context, comment *Comment) error {
-	return r.db.WithContext(ctx).Create(comment).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(comment).Error; err != nil {
+			return err
+		}
+		return NewVideoRepository(tx).ChangePopularity(ctx, comment.VideoID, 1)
+	})
 }
 
 func (r *CommentRepository) DeleteComment(ctx context.Context, comment *Comment) error {
