@@ -208,7 +208,13 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			seedVideo(t, 1, 1)
 			seedLike(t, 1, 1, 0, 1, 0)
 			seedLike(t, 2, 1, 1, 1, 0)
-			events := []rabbitmq.LikeCommandEvent{event(1, 1, 1, true), event(2, 1, 1, false)}
+			seedLike(t, 4, 1, 0, 4, 0)
+			seedVideo(t, 5, 0)
+			seedLike(t, 1, 5, 0, 7, 0)
+			events := []rabbitmq.LikeCommandEvent{
+				event(1, 1, 1, true), event(1, 1, 1, true), event(2, 1, 1, false),
+				event(4, 1, 3, false), event(1, 5, 6, true),
+			}
 			if !netZero {
 				seedLike(t, 3, 1, 0, 1, 0)
 				events = append(events, event(3, 1, 1, true))
@@ -221,36 +227,34 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			_, err := repo.ApplyLikeCommandBatch(ctx, events)
+			acks := &batchAckProbe{}
+			batchWorker := worker.NewLikeCommandBatchWorker(nil, repo, rabbitmq.LikeCommandPartition(1, 1), nil)
+			err := batchWorker.HandleBatch(ctx, deliveries(t, events, acks))
 			db.Callback().Update().Remove("b_count_video_updates")
-			if err != nil {
-				t.Fatal(err)
+			if err != nil || acks.calls != len(events) {
+				t.Fatalf("batch result: ACKs=%d err=%v", acks.calls, err)
 			}
-			wantCount, wantUpdates := int64(2), int32(1)
+			wantCount, wantUpdates := int64(2), int32(2)
 			if netZero {
-				wantCount, wantUpdates = 1, 0
+				wantCount, wantUpdates = 1, 1
 			}
 			v := getVideo(t, 1)
 			if v.LikesCount != wantCount || updates.Load() != wantUpdates {
 				t.Fatalf("aggregate: %+v updates=%d", v, updates.Load())
 			}
+			same, changed := getLike(t, 4, 1), getLike(t, 1, 5)
+			if same.Status != 0 || same.AppliedRevision != 3 || same.NextRevision != 4 ||
+				!same.UpdatedAt.Equal(updatedAt) || !same.CreatedAt.Equal(createdAt) {
+				t.Fatalf("same-state row in mixed batch: %+v", same)
+			}
+			if getVideo(t, 5).LikesCount != 1 || changed.Status != 1 || changed.AppliedRevision != 6 ||
+				changed.NextRevision != 7 || changed.UpdatedAt.Equal(updatedAt) || !changed.CreatedAt.Equal(createdAt) {
+				t.Fatalf("other video's changed row: %+v", changed)
+			}
 		}
 	})
-	accounts := make([]uint, 4)
-	for account := uint(1); ; account++ {
-		p := rabbitmq.LikeCommandPartition(account, 1)
-		if accounts[p] == 0 {
-			accounts[p] = account
-		}
-		ready := true
-		for _, a := range accounts {
-			ready = ready && a != 0
-		}
-		if ready {
-			break
-		}
-	}
-	t.Run("four_partitions_concurrent_atomic_counts", func(t *testing.T) {
+	accounts := []uint{1, 2, 3, 4}
+	t.Run("concurrent_transactions_keep_atomic_counts", func(t *testing.T) {
 		reset(t)
 		seedVideo(t, 1, 0)
 		for _, account := range accounts {
@@ -296,24 +300,20 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 	t.Run("rollback_all_tables_and_no_ack", func(t *testing.T) {
 		reset(t)
 		seedVideo(t, 1, 0)
-		seedVideo(t, 2, 0)
+		seedVideo(t, 5, 0) // Videos 1 and 5 share a partition.
 		seedLike(t, 1, 1, 0, 1, 0)
+		seedLike(t, 1, 5, 0, 1, 0)
 		partition := rabbitmq.LikeCommandPartition(1, 1)
-		account := uint(1)
-		for rabbitmq.LikeCommandPartition(account, 2) != partition {
-			account++
-		}
-		seedLike(t, account, 2, 0, 1, 0)
-		if err := db.Exec(`CREATE TRIGGER b_fail_count BEFORE UPDATE ON videos FOR EACH ROW BEGIN IF NEW.id=2 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='B rollback injection'; END IF; END`).Error; err != nil {
+		if err := db.Exec(`CREATE TRIGGER b_fail_count BEFORE UPDATE ON videos FOR EACH ROW BEGIN IF NEW.id=5 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='B rollback injection'; END IF; END`).Error; err != nil {
 			t.Fatal(err)
 		}
 		defer db.Exec("DROP TRIGGER b_fail_count")
 		acks := &batchAckProbe{}
-		err := worker.NewLikeCommandBatchWorker(nil, repo, partition, nil).HandleBatch(ctx, deliveries(t, []rabbitmq.LikeCommandEvent{event(1, 1, 1, true), event(account, 2, 1, true)}, acks))
+		err := worker.NewLikeCommandBatchWorker(nil, repo, partition, nil).HandleBatch(ctx, deliveries(t, []rabbitmq.LikeCommandEvent{event(1, 1, 1, true), event(1, 5, 1, true)}, acks))
 		if err == nil || acks.calls != 0 {
 			t.Fatalf("failed transaction ACKed: err=%v acks=%d", err, acks.calls)
 		}
-		for _, pair := range [][2]uint{{1, 1}, {account, 2}} {
+		for _, pair := range [][2]uint{{1, 1}, {1, 5}} {
 			row := getLike(t, pair[0], pair[1])
 			v := getVideo(t, pair[1])
 			if row.Status != 0 || row.AppliedRevision != 0 || row.NextRevision != 1 || !row.UpdatedAt.Equal(updatedAt) || v.LikesCount != 0 {
@@ -394,7 +394,8 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		if err := rabbitmq.DeclareLikeCommands(control); err != nil {
 			t.Fatal(err)
 		}
-		publisher := rabbitmq.NewLikeCommandMQ(config.RabbitMQConfig{Host: uri.Host, Port: uri.Port, Username: uri.Username, Password: uri.Password, VHost: uri.Vhost, LikePublishTimeoutMS: 1000})
+		rabbitCfg := config.RabbitMQConfig{Host: uri.Host, Port: uri.Port, Username: uri.Username, Password: uri.Password, VHost: uri.Vhost, LikePublishTimeoutMS: 1000}
+		publisher := rabbitmq.NewLikeCommandMQ(rabbitCfg)
 		defer publisher.Close()
 		purge := func() {
 			for p := 0; p < 4; p++ {
@@ -405,17 +406,54 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 		t.Run("four_exclusive_consumers_and_ack", func(t *testing.T) {
 			reset(t)
 			purge()
-			seedVideo(t, 1, 0)
-			for partition, account := range accounts {
+			for id := uint(1); id <= 4; id++ {
+				seedVideo(t, id, 0)
 				next := uint64(1)
-				if partition == 0 {
-					next = 50
+				if id == 1 {
+					next = worker.LikeCommandBatchSize
 				}
-				seedLike(t, account, 1, 0, next, 0)
-				for revision := uint64(1); revision <= next; revision++ {
-					if err := publisher.Publish(ctx, event(account, 1, revision, true)); err != nil {
-						t.Fatal(err)
+				seedLike(t, 1, id, 0, next, 0)
+			}
+			for _, account := range accounts[1:] {
+				seedLike(t, account, 1, 0, 2, 0)
+			}
+
+			// Independent publisher connections send competing users' commands for one video.
+			published := make(chan error, len(accounts)-1)
+			for _, account := range accounts[1:] {
+				go func(account uint) {
+					p := rabbitmq.NewLikeCommandMQ(rabbitCfg)
+					defer p.Close()
+					for _, e := range []rabbitmq.LikeCommandEvent{
+						event(account, 1, 1, false), event(account, 1, 2, true), event(account, 1, 2, true),
+					} {
+						if err := p.Publish(ctx, e); err != nil {
+							published <- err
+							return
+						}
 					}
+					published <- nil
+				}(account)
+			}
+			for revision := uint64(1); revision <= worker.LikeCommandBatchSize; revision++ {
+				if err := publisher.Publish(ctx, event(1, 1, revision, true)); err != nil {
+					t.Error(err)
+				}
+			}
+			for id := uint(2); id <= 4; id++ {
+				if err := publisher.Publish(ctx, event(1, id, 1, true)); err != nil {
+					t.Error(err)
+				}
+			}
+			for range accounts[1:] {
+				if err := <-published; err != nil {
+					t.Error(err)
+				}
+			}
+			for p, want := range []int{1, 1, worker.LikeCommandBatchSize + 3*(len(accounts)-1), 1} {
+				q, err := control.QueueInspect(rabbitmq.LikeCommandQueue(p))
+				if err != nil || q.Messages != want {
+					t.Fatalf("partition %d ready=%d want=%d err=%v", p, q.Messages, want, err)
 				}
 			}
 			runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -430,7 +468,7 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 					<-finished
 					t.Fatal(err)
 				}
-				if applied == 4 {
+				if applied == 7 {
 					break
 				}
 				select {
@@ -463,9 +501,10 @@ func TestLikeCommandBatchWorker(t *testing.T) {
 			time.Sleep(30 * time.Millisecond)
 			cancel()
 			<-finished
-			v := getVideo(t, 1)
-			if v.LikesCount != 4 {
-				t.Fatalf("four queues: %+v", v)
+			for id, want := range []int64{4, 1, 1, 1} {
+				if v := getVideo(t, uint(id+1)); v.LikesCount != want {
+					t.Fatalf("four queues: video=%+v want likes_count=%d", v, want)
+				}
 			}
 
 			for p := 0; p < 4; p++ {

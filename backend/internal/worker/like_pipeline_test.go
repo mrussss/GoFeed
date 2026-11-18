@@ -356,31 +356,47 @@ func TestLikeCommandPipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := rabbitmq.LikeCommandEvent{CommandID: firstCommand.ID, RequestID: firstCommand.RequestID, AccountID: accountID, VideoID: 10, DesiredLiked: true, Revision: 1}
+	// Read the replayed commands directly from the broker after the consumer group
+	// stops. Management ACK counters are sampled and can lag or include prior runs.
+	shutdown()
+	partition := rabbitmq.LikeCommandPartition(accountID, 10)
+	queue := rabbitmq.LikeCommandQueue(partition)
 	for i := 0; i < 2; i++ {
 		if err = publisher.Publish(ctx, old); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// Round-trip the queue's unacked count to observe completion, not only receipt.
-	queue := rabbitmq.LikeCommandQueue(rabbitmq.LikeCommandPartition(accountID, 10))
-	wait("old messages ACKed", func() bool {
-		var q struct {
-			Messages     int `json:"messages"`
-			Unacked      int `json:"messages_unacknowledged"`
-			MessageStats struct {
-				Ack uint64 `json:"ack"`
-			} `json:"message_stats"`
-		}
-		if err := json.Unmarshal(adminRequest("GET", "/api/queues/"+url.PathEscape(uri.Vhost)+"/"+url.PathEscape(queue)), &q); err != nil {
+	replayChannel, err := controlConn.Channel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replays []amqp.Delivery
+	for {
+		delivery, ok, err := replayChannel.Get(queue, false)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return q.Messages == 0 && q.Unacked == 0 && q.MessageStats.Ack >= 4
-	})
+		if !ok {
+			break
+		}
+		replays = append(replays, delivery)
+	}
+	if len(replays) < 2 {
+		t.Fatalf("expected both duplicate deliveries, got %d", len(replays))
+	}
+	if err = worker.NewLikeCommandBatchWorker(replayChannel, repo, partition, cache).HandleBatch(ctx, replays); err != nil {
+		t.Fatal(err)
+	}
+	if err = replayChannel.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := control.Get(queue, false); err != nil || ok {
+		t.Fatalf("old messages remain after replay: %v %v", ok, err)
+	}
 	if count() != 0 || state().AppliedRevision != 2 {
 		t.Fatal("old revision changed the state")
 	}
 	t.Log("unlike retained status=0 row; server revision=2, isLiked=false, likes_count=0; broker-disconnected consumers recovered; duplicate old messages had no effect")
-	shutdown()
 
 	// Reuse real MQ deliveries to verify cache failure cannot prevent commit/ACK.
 	// Give this test fixture a short TTL instead of waiting 60 seconds.
@@ -403,7 +419,7 @@ func TestLikeCommandPipeline(t *testing.T) {
 		}
 		return ok
 	})
-	if err = worker.NewLikeCommandBatchWorker(control, repo, rabbitmq.LikeCommandPartition(accountID, 10), failedCache).HandleBatch(ctx, []amqp.Delivery{delivery}); err != nil {
+	if err = worker.NewLikeCommandBatchWorker(control, repo, partition, failedCache).HandleBatch(ctx, []amqp.Delivery{delivery}); err != nil {
 		t.Fatal(err)
 	}
 	for _, readCache := range []*rediscache.Client{nil, failedCache} {

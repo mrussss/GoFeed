@@ -190,11 +190,30 @@ func (r *LikeRepository) ApplyLikeCommandBatch(ctx context.Context, events []rab
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		deltas := make(map[uint]int64)
 		now := time.Now().UTC()
+
+		// Lock existing A1 rows through the unique index in (video_id, account_id) order.
+		placeholders := make([]string, 0, len(keys))
+		args := make([]any, 0, 2*len(keys))
 		for _, key := range keys {
-			var state Like
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("video_id=? AND account_id=?", key.videoID, key.accountID).Take(&state).Error; err != nil {
-				return err
-			}
+			placeholders = append(placeholders, "(?,?)")
+			args = append(args, key.videoID, key.accountID)
+		}
+		var states []Like
+		if err := tx.Raw("SELECT * FROM likes FORCE INDEX (idx_like_video_account) WHERE (video_id,account_id) IN ("+strings.Join(placeholders, ",")+") ORDER BY video_id,account_id FOR UPDATE", args...).Scan(&states).Error; err != nil {
+			return err
+		}
+		if len(states) != len(keys) {
+			return errors.New("batch contains relation not allocated by A1")
+		}
+		byPair := make(map[pair]Like, len(states))
+		for _, state := range states {
+			byPair[pair{state.VideoID, state.AccountID}] = state
+		}
+		statusCases, revisionCases, timeCases := "CASE id", "CASE id", "CASE id"
+		statusArgs, revisionArgs, timeArgs := []any{}, []any{}, []any{}
+		ids := make([]uint, 0, len(states))
+		for _, key := range keys {
+			state := byPair[key]
 			event := latest[key]
 			if event.Revision <= state.AppliedRevision {
 				continue
@@ -206,17 +225,41 @@ func (r *LikeRepository) ApplyLikeCommandBatch(ctx context.Context, events []rab
 			if event.DesiredLiked {
 				status = 1
 			}
-			changes := map[string]any{"status": status, "applied_revision": event.Revision}
+			statusCases += " WHEN ? THEN ?"
+			statusArgs = append(statusArgs, state.ID, status)
+			revisionCases += " WHEN ? THEN ?"
+			revisionArgs = append(revisionArgs, state.ID, event.Revision)
 			if status != state.Status {
-				changes["updated_at"] = now
+				timeCases += " WHEN ? THEN ?"
+				timeArgs = append(timeArgs, state.ID, now)
 				deltas[key.videoID] += int64(status) - int64(state.Status)
 			}
-			// UpdateColumns deliberately bypasses GORM's automatic UpdatedAt change:
-			// true->true/false->false must advance revision without changing that time.
-			if err := tx.Model(&Like{}).Where("id=?", state.ID).UpdateColumns(changes).Error; err != nil {
-				return err
+			ids = append(ids, state.ID)
+		}
+		if len(ids) > 0 {
+			statusCases += " ELSE status END"
+			revisionCases += " ELSE applied_revision END"
+			assignments := "status=" + statusCases + ",applied_revision=" + revisionCases
+			updateArgs := append(statusArgs, revisionArgs...)
+			if len(timeArgs) > 0 {
+				timeCases += " ELSE updated_at END"
+				assignments += ",updated_at=" + timeCases
+				updateArgs = append(updateArgs, timeArgs...)
+			}
+			idPlaceholders := make([]string, len(ids))
+			for i, id := range ids {
+				idPlaceholders[i] = "?"
+				updateArgs = append(updateArgs, id)
+			}
+			result := tx.Exec("UPDATE likes SET "+assignments+" WHERE id IN ("+strings.Join(idPlaceholders, ",")+")", updateArgs...)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != int64(len(ids)) {
+				return errors.New("bulk update affected unexpected relation count")
 			}
 		}
+
 		videos := make([]uint, 0, len(deltas))
 		for id, delta := range deltas {
 			if delta != 0 {

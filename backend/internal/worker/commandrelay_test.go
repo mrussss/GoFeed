@@ -33,11 +33,11 @@ func (f commandPublisherFunc) Publish(ctx context.Context, e rabbitmq.LikeComman
 }
 
 func TestLikeCommandPartition(t *testing.T) {
-	// Fixed vectors freeze byte encoding and hashing for the B-stage consumers.
+	// Fixed vectors pin the hash across accounts and process restarts.
 	for _, v := range []struct {
 		account, video uint
 		partition      int
-	}{{1, 1, 1}, {1, 2, 0}, {2, 1, 0}} {
+	}{{1, 3, 0}, {1, 4, 1}, {1, 1, 2}, {1, 2, 3}, {2, 1, 2}, {999, 1, 2}, {1, 256, 0}} {
 		if got := rabbitmq.LikeCommandPartition(v.account, v.video); got != v.partition {
 			t.Fatalf("partition(%d,%d)=%d", v.account, v.video, got)
 		}

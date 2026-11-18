@@ -36,11 +36,10 @@ func (event LikeCommandEvent) Validate() error {
 }
 
 // LikeCommandPartition is the fixed routing contract shared by Relay and consumers:
-// FNV-1a 64 over two big-endian uint64 values (account, video), modulo four.
-func LikeCommandPartition(accountID, videoID uint) int {
-	var key [16]byte
-	binary.BigEndian.PutUint64(key[:8], uint64(accountID))
-	binary.BigEndian.PutUint64(key[8:], uint64(videoID))
+// FNV-1a 64 over a big-endian uint64 video ID, modulo four.
+func LikeCommandPartition(_ uint, videoID uint) int {
+	var key [8]byte
+	binary.BigEndian.PutUint64(key[:], uint64(videoID))
 	h := fnv.New64a()
 	_, _ = h.Write(key[:])
 	return int(h.Sum64() % LikeCommandPartitions)
