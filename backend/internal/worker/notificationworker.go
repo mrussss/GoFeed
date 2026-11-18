@@ -100,26 +100,6 @@ func (w *NotificationWorker) process(ctx context.Context, d amqp.Delivery) error
 	var notif *Notification
 
 	switch {
-	case routingKey == "like.like":
-		var evt rabbitmq.LikeEvent
-		if err := json.Unmarshal(body, &evt); err != nil {
-			return nil
-		}
-		if evt.UserID == 0 || evt.VideoID == 0 {
-			return nil
-		}
-		var authorID uint
-		if err := w.db.WithContext(ctx).Model(&struct {
-			ID       uint
-			AuthorID uint
-		}{}).Table("videos").Where("id = ?", evt.VideoID).Select("author_id").Scan(&authorID).Error; err != nil {
-			return err
-		}
-		if authorID == 0 || authorID == evt.UserID {
-			return nil
-		}
-		notif = &Notification{RecipientID: authorID, SenderID: evt.UserID, Type: "like", TargetID: evt.VideoID, Content: "点赞了你的视频"}
-
 	case routingKey == "comment.publish":
 		var evt rabbitmq.CommentEvent
 		if err := json.Unmarshal(body, &evt); err != nil {

@@ -37,10 +37,12 @@ type RedisConfig struct {
 }
 
 type RabbitMQConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	VHost                string `yaml:"vhost"`
+	LikePublishTimeoutMS int    `yaml:"like_publish_timeout_ms"`
+	Host                 string `yaml:"host"`
+	Port                 int    `yaml:"port"`
+	Username             string `yaml:"username"`
+	Password             string `yaml:"password"`
 }
 
 type ObservabilityConfig struct {

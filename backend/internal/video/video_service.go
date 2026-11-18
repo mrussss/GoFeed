@@ -4,26 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 
 	"feedsystem_video_go/internal/apierror"
-	"feedsystem_video_go/internal/middleware/rabbitmq"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 
 	"gorm.io/gorm"
 )
 
 type VideoService struct {
-	repo         *VideoRepository
-	cache        *rediscache.Client
-	cacheTTL     time.Duration
-	popularityMQ *rabbitmq.PopularityMQ
+	repo     *VideoRepository
+	cache    *rediscache.Client
+	cacheTTL time.Duration
 }
 
-func NewVideoService(repo *VideoRepository, cache *rediscache.Client, popularityMQ *rabbitmq.PopularityMQ) *VideoService {
-	return &VideoService{repo: repo, cache: cache, cacheTTL: 5 * time.Minute, popularityMQ: popularityMQ}
+func NewVideoService(repo *VideoRepository, cache *rediscache.Client) *VideoService {
+	return &VideoService{repo: repo, cache: cache, cacheTTL: 60 * time.Second}
 }
 
 func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
@@ -191,40 +188,4 @@ func (vs *VideoService) GetDetail(ctx context.Context, id uint) (*Video, error) 
 		setCached(video)
 	}
 	return video, nil
-}
-
-func (vs *VideoService) UpdateLikesCount(ctx context.Context, id uint, likesCount int64) error {
-	if err := vs.repo.UpdateLikesCount(ctx, id, likesCount); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (vs *VideoService) UpdatePopularity(ctx context.Context, id uint, change int64) error {
-	if err := vs.repo.UpdatePopularity(ctx, id, change); err != nil {
-		return err
-	}
-
-	if vs.popularityMQ != nil {
-		if err := vs.popularityMQ.Update(ctx, id, change); err == nil {
-			return nil
-		}
-	}
-
-	if vs.cache != nil {
-		// 1) 详情缓存：直接失效（最简单靠谱）
-		_ = vs.cache.Del(context.Background(), vs.cache.Key("video:detail:id=%d", id))
-
-		// 2) 热榜：写到“时间窗ZSET”，不要用 detail key
-		now := time.Now().UTC().Truncate(time.Minute)
-		windowKey := vs.cache.Key("hot:video:1m:%s", now.Format("200601021504"))
-		member := strconv.FormatUint(uint64(id), 10)
-
-		opCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-		defer cancel()
-
-		_ = vs.cache.ZincrBy(opCtx, windowKey, member, float64(change))
-		_ = vs.cache.Expire(opCtx, windowKey, 2*time.Hour)
-	}
-	return nil
 }

@@ -1,12 +1,21 @@
-import { postJson } from './client'
-import type { IsLikedResponse, MessageResponse, Video } from './types'
+import { ApiError, postJson } from './client'
+import type { IsLikedResponse, Video } from './types'
 
-export function like(videoId: number) {
-  return postJson<MessageResponse>('/like/like', { video_id: videoId }, { authRequired: true })
+export type LikeCommand = {
+  request_id: string
+  video_id: number
+  desired_liked: boolean
 }
+export type LikeAccepted = { status: 'accepted'; request_id: string; command_id: string; revision: string }
 
-export function unlike(videoId: number) {
-  return postJson<MessageResponse>('/like/unlike', { video_id: videoId }, { authRequired: true })
+export async function sendCommand(command: LikeCommand, accountId: number) {
+  const res = await postJson<LikeAccepted>(command.desired_liked ? '/like/like' : '/like/unlike', command,
+    { authRequired: true, timeoutMs: 8000, expectedAccountId: accountId })
+  if (res?.status !== 'accepted' || res.request_id !== command.request_id ||
+      !/^[1-9][0-9]*$/.test(res.command_id) || !/^[1-9][0-9]*$/.test(res.revision)) {
+    throw new ApiError('命令受理结果未知，请重试原请求', 0)
+  }
+  return res
 }
 
 export function isLiked(videoId: number) {

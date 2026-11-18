@@ -7,6 +7,7 @@ import UserAvatar from '../components/UserAvatar.vue'
 import { ApiError } from '../api/client'
 import * as commentApi from '../api/comment'
 import * as likeApi from '../api/like'
+import { useLikeFollow } from '../composables/useLikeFollow'
 import type { Comment, Video } from '../api/types'
 import * as videoApi from '../api/video'
 import { useAuthStore } from '../stores/auth'
@@ -28,6 +29,24 @@ const state = reactive({
   isLiked: null as boolean | null,
   busy: false,
 })
+
+const { likeBusy, toggleLike: sendLike, protectLike } = useLikeFollow(needLogin)
+function likeItem() {
+  const video = state.video
+  if (!video) return null
+  let liked = !!state.isLiked
+  return {
+    id: video.id,
+    get is_liked() { return state.video === video ? !!state.isLiked : liked },
+    set is_liked(value: boolean) { liked = value; if (state.video === video) state.isLiked = value },
+    get likes_count() { return video.likes_count },
+    set likes_count(value: number) { video.likes_count = value },
+  }
+}
+function protectDetail(fromRead = false) { const item = likeItem(); if (item) protectLike(item, fromRead) }
+
+// Keep the raw detail count until the separate isLiked read can reconcile it.
+let serverLikesCount = 0
 
 const muted = ref(true)
 const videoEl = ref<HTMLVideoElement | null>(null)
@@ -52,10 +71,18 @@ async function loadVideo() {
   }
   state.loading = true
   state.error = ''
+  const requestedId = id.value
+  const accountId = auth.claims?.account_id
   try {
-    state.video = await videoApi.getDetail(id.value)
+    const video = await videoApi.getDetail(requestedId)
+    if (id.value !== requestedId || auth.claims?.account_id !== accountId) return
+    serverLikesCount = video.likes_count
+    state.video = video
+    protectDetail()
   } catch (e) {
-    state.error = e instanceof ApiError ? e.message : String(e)
+    if (id.value === requestedId && auth.claims?.account_id === accountId) {
+      state.error = e instanceof ApiError ? e.message : String(e)
+    }
   } finally {
     state.loading = false
   }
@@ -66,11 +93,21 @@ async function loadIsLiked() {
     state.isLiked = null
     return
   }
+  const requestedId = id.value
+  const accountId = auth.claims?.account_id
   try {
-    const res = await likeApi.isLiked(id.value)
-    state.isLiked = res.is_liked
+    const res = await likeApi.isLiked(requestedId)
+    if (id.value !== requestedId || auth.claims?.account_id !== accountId) return
+    if (!state.video || state.video.id !== requestedId) return
+    const item = { id: requestedId, is_liked: res.is_liked, likes_count: serverLikesCount }
+    protectLike(item, true)
+    state.isLiked = item.is_liked
+    state.video.likes_count = item.likes_count
   } catch {
-    state.isLiked = null
+    if (id.value === requestedId && auth.claims?.account_id === accountId) {
+      state.isLiked = null
+      protectDetail()
+    }
   }
 }
 
@@ -98,27 +135,8 @@ function togglePlayPause() {
 }
 
 async function toggleLike() {
-  if (!state.video) return
-  if (!auth.isLoggedIn) return needLogin()
-  if (state.busy) return
-
-  state.busy = true
-  try {
-    if (state.isLiked) {
-      await likeApi.unlike(id.value)
-      state.isLiked = false
-      state.video.likes_count = Math.max(0, state.video.likes_count - 1)
-    } else {
-      await likeApi.like(id.value)
-      state.isLiked = true
-      state.video.likes_count += 1
-    }
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : String(e)
-    toast.error(msg)
-  } finally {
-    state.busy = false
-  }
+  const item = likeItem()
+  if (item) await sendLike(item)
 }
 
 async function toggleFollow() {
@@ -238,8 +256,11 @@ watch(
 )
 
 watch(
-  () => auth.isLoggedIn,
+  () => auth.claims?.account_id,
   async () => {
+    state.isLiked = null
+    state.video = null
+    await loadVideo()
     await loadIsLiked()
   },
 )
@@ -294,7 +315,7 @@ onMounted(async () => {
           </div>
 
           <div class="actions">
-            <button class="act" type="button" :disabled="state.busy" @click.stop="toggleLike">
+            <button class="act" type="button" :disabled="!!likeBusy[String(id)] || (auth.isLoggedIn && state.isLiked === null)" @click.stop="toggleLike">
               <span class="icon" :class="{ liked: !!state.isLiked }">♥</span>
               <span class="count">{{ state.video.likes_count }}</span>
             </button>

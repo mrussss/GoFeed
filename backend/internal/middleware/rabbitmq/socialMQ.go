@@ -13,17 +13,13 @@ type SocialMQ struct {
 }
 
 const (
-	socialExchange   = "social.events"
-	socialQueue      = "social.events"
-	socialBindingKey = "social.*"
-
-	socialFollowRK   = "social.follow"
-	socialUnfollowRK = "social.unfollow"
+	socialExchange          = "social.events"
+	SocialNotificationQueue = "notification.social"
+	socialFollowRK          = "social.follow"
 )
 
 type SocialEvent struct {
 	EventID    string    `json:"event_id"`
-	Action     string    `json:"action"`
 	FollowerID uint      `json:"follower_id"`
 	VloggerID  uint      `json:"vlogger_id"`
 	OccurredAt time.Time `json:"occurred_at"`
@@ -37,7 +33,7 @@ func NewSocialMQ(base *RabbitMQ) (*SocialMQ, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := DeclareTopic(ch, socialExchange, socialQueue, socialBindingKey); err != nil {
+	if err := DeclareTopic(ch, socialExchange, SocialNotificationQueue, socialFollowRK); err != nil {
 		ch.Close()
 		return nil, err
 	}
@@ -45,14 +41,6 @@ func NewSocialMQ(base *RabbitMQ) (*SocialMQ, error) {
 }
 
 func (s *SocialMQ) Follow(ctx context.Context, followerID, vloggerID uint) error {
-	return s.publish(ctx, "follow", socialFollowRK, followerID, vloggerID)
-}
-
-func (s *SocialMQ) UnFollow(ctx context.Context, followerID, vloggerID uint) error {
-	return s.publish(ctx, "unfollow", socialUnfollowRK, followerID, vloggerID)
-}
-
-func (s *SocialMQ) publish(ctx context.Context, action, routingKey string, followerID, vloggerID uint) error {
 	if s == nil || s.ch == nil {
 		return errors.New("social mq is not initialized")
 	}
@@ -65,10 +53,9 @@ func (s *SocialMQ) publish(ctx context.Context, action, routingKey string, follo
 	}
 	evt := SocialEvent{
 		EventID:    id,
-		Action:     action,
 		FollowerID: followerID,
 		VloggerID:  vloggerID,
 		OccurredAt: time.Now().UTC(),
 	}
-	return PublishJSON(ctx, s.ch, socialExchange, routingKey, evt)
+	return PublishJSON(ctx, s.ch, socialExchange, socialFollowRK, evt)
 }

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive } from 'vue'
+import { computed, onMounted, reactive, watch } from 'vue'
 
 import { ApiError } from '../api/client'
 import * as feedApi from '../api/feed'
-import * as likeApi from '../api/like'
+import { useLikeFollow } from '../composables/useLikeFollow'
 import type { FeedVideoItem } from '../api/types'
 import AppShell from '../components/AppShell.vue'
 import FeedVideoCard from '../components/FeedVideoCard.vue'
@@ -23,49 +23,45 @@ const state = reactive({
   limit: 10,
   asOf: 0,
   nextOffset: 0,
+  dbCursor: undefined as { latest_popularity: number; latest_before: string; latest_id_before: number } | undefined,
 })
 
-const likeBusy = reactive<Record<string, boolean>>({})
+const { likeBusy, toggleLike, protectLike } = useLikeFollow(() => toast.error('请先登录'))
+watch(() => state.items, items => items.forEach(item => protectLike(item)), { deep: true, flush: 'sync' })
+watch(() => auth.claims?.account_id, () => { state.items = []; void loadHot(true) })
 
 async function loadHot(reset: boolean) {
   if (state.loading) return
   state.loading = true
   state.error = ''
+  const accountId = auth.claims?.account_id
+  const asOf = reset ? 0 : state.asOf
   try {
     const res = await feedApi.listByPopularity({
       limit: state.limit,
-      as_of: reset ? 0 : state.asOf,
+      as_of: asOf,
       offset: reset ? 0 : state.nextOffset,
+      ...(!reset && asOf === 0 ? state.dbCursor : undefined),
     })
+    if (auth.claims?.account_id !== accountId) return
+    res.video_list.forEach(item => protectLike(item, true))
     state.hasMore = res.has_more
     state.asOf = res.as_of
     state.nextOffset = res.next_offset
-    state.items = reset ? res.video_list : state.items.concat(res.video_list)
+    state.dbCursor = res.as_of === 0 && res.next_latest_before && res.next_latest_id_before
+      ? {
+          latest_popularity: res.next_latest_popularity ?? 0,
+          latest_before: res.next_latest_before,
+          latest_id_before: res.next_latest_id_before,
+        }
+      : undefined
+    const switchedToDatabase = asOf > 0 && res.as_of === 0
+    state.items = reset || switchedToDatabase ? res.video_list : state.items.concat(res.video_list)
   } catch (e) {
     state.error = e instanceof ApiError ? e.message : String(e)
   } finally {
     state.loading = false
-  }
-}
-
-async function toggleLike(item: FeedVideoItem) {
-  if (!auth.isLoggedIn) {
-    toast.error('请先登录')
-    return
-  }
-  const key = String(item.id)
-  if (likeBusy[key]) return
-  likeBusy[key] = true
-  try {
-    if (item.is_liked) await likeApi.unlike(item.id)
-    else await likeApi.like(item.id)
-    item.is_liked = !item.is_liked
-    item.likes_count = Math.max(0, item.likes_count + (item.is_liked ? 1 : -1))
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : String(e)
-    toast.error(msg)
-  } finally {
-    likeBusy[key] = false
+    if (auth.claims?.account_id !== accountId) void loadHot(true)
   }
 }
 

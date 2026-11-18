@@ -15,6 +15,7 @@ redis:
   db: 0
 
 rabbitmq:
+  like_publish_timeout_ms: 3000
   host: rabbitmq
   port: 5672
   username: admin

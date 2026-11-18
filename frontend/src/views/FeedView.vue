@@ -6,7 +6,7 @@ import JsonBox from '../components/JsonBox.vue'
 import FeedVideoCard from '../components/FeedVideoCard.vue'
 import { ApiError } from '../api/client'
 import * as feedApi from '../api/feed'
-import * as likeApi from '../api/like'
+import { useLikeFollow } from '../composables/useLikeFollow'
 import type { FeedVideoItem } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 
@@ -56,27 +56,15 @@ const action = reactive<{ loading: boolean; error: string; payload: unknown; nam
 
 const canLike = computed(() => auth.isLoggedIn)
 
-async function runAction(name: string, fn: () => Promise<unknown>) {
-  action.name = name
-  action.loading = true
-  action.error = ''
-  action.payload = null
-  try {
-    action.payload = await fn()
-  } catch (e) {
-    action.error = e instanceof ApiError ? e.message : String(e)
-    action.payload = e instanceof ApiError ? e.payload : null
-  } finally {
-    action.loading = false
-  }
-}
-
 async function loadLatest(reset: boolean) {
   latest.loading = true
   latest.error = ''
+  const accountId = auth.claims?.account_id
   try {
     const latest_time = reset ? 0 : latest.next_time
     const res = await feedApi.listLatest({ limit: latest.limit, latest_time })
+    if (auth.claims?.account_id !== accountId) return
+    res.video_list.forEach(item => protectLike(item, true))
     latest.has_more = res.has_more
     latest.next_time = res.next_time
     latest.items = reset ? res.video_list : latest.items.concat(res.video_list)
@@ -90,12 +78,15 @@ async function loadLatest(reset: boolean) {
 async function loadLikesCount(reset: boolean) {
   likesCount.loading = true
   likesCount.error = ''
+  const accountId = auth.claims?.account_id
   try {
     const res = await feedApi.listLikesCount({
       limit: likesCount.limit,
       likes_count_before: reset ? undefined : likesCount.next_likes_count_before,
       id_before: reset ? undefined : likesCount.next_id_before,
     })
+    if (auth.claims?.account_id !== accountId) return
+    res.video_list.forEach(item => protectLike(item, true))
     likesCount.has_more = res.has_more
     likesCount.next_likes_count_before = res.next_likes_count_before
     likesCount.next_id_before = res.next_id_before
@@ -110,9 +101,12 @@ async function loadLikesCount(reset: boolean) {
 async function loadFollowing(reset: boolean) {
   following.loading = true
   following.error = ''
+  const accountId = auth.claims?.account_id
   try {
     const latest_time = reset ? 0 : following.next_time
     const res = await feedApi.listByFollowing({ limit: following.limit, latest_time })
+    if (auth.claims?.account_id !== accountId) return
+    res.video_list.forEach(item => protectLike(item, true))
     following.has_more = res.has_more
     following.next_time = res.next_time
     following.items = reset ? res.video_list : following.items.concat(res.video_list)
@@ -123,18 +117,8 @@ async function loadFollowing(reset: boolean) {
   }
 }
 
-async function toggleLike(item: FeedVideoItem) {
-  if (!auth.isLoggedIn) return
-
-  await runAction(item.is_liked ? '取消点赞' : '点赞', async () => {
-    if (item.is_liked) await likeApi.unlike(item.id)
-    else await likeApi.like(item.id)
-
-    item.is_liked = !item.is_liked
-    item.likes_count = Math.max(0, item.likes_count + (item.is_liked ? 1 : -1))
-    return { ok: true, is_liked: item.is_liked, likes_count: item.likes_count }
-  })
-}
+const { likeBusy, toggleLike, protectLike } = useLikeFollow(() => {})
+watch(() => [latest.items, likesCount.items, following.items], lists => lists.forEach(items => items.forEach(item => protectLike(item))), { deep: true, flush: 'sync' })
 
 onMounted(async () => {
   await loadLatest(true)
@@ -145,11 +129,12 @@ onMounted(async () => {
 })
 
 watch(
-  () => auth.isLoggedIn,
+  () => auth.claims?.account_id,
   async (v) => {
-    if (v && following.items.length === 0) {
-      await loadFollowing(true)
-    }
+    latest.items = []; likesCount.items = []; following.items = []
+    await loadLatest(true)
+    await loadLikesCount(true)
+    if (v) await loadFollowing(true)
   },
 )
 </script>
@@ -181,7 +166,7 @@ watch(
               :key="`latest-${item.id}`"
               :item="item"
               :can-like="canLike"
-              :busy="action.loading"
+              :busy="!!likeBusy[String(item.id)]"
               @toggle-like="toggleLike"
             />
           </div>
@@ -212,7 +197,7 @@ watch(
               :key="`likes-${item.id}`"
               :item="item"
               :can-like="canLike"
-              :busy="action.loading"
+              :busy="!!likeBusy[String(item.id)]"
               @toggle-like="toggleLike"
             />
           </div>
@@ -241,7 +226,7 @@ watch(
               :key="`following-${item.id}`"
               :item="item"
               :can-like="canLike"
-              :busy="action.loading"
+              :busy="!!likeBusy[String(item.id)]"
               @toggle-like="toggleLike"
             />
           </div>

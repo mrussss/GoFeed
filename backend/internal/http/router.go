@@ -59,12 +59,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 	}
 	// video
 	videoRepository := video.NewVideoRepository(db)
-	popularityMQ, err := rabbitmq.NewPopularityMQ(rmq)
-	if err != nil {
-		log.Printf("PopularityMQ init failed (mq disabled): %v", err)
-		popularityMQ = nil
-	}
-	videoService := video.NewVideoService(videoRepository, cache, popularityMQ)
+	videoService := video.NewVideoService(videoRepository, cache)
 	videoHandler := video.NewVideoHandler(videoService, accountService)
 	chunkHandler := video.NewChunkUploadHandler(cache)
 	videoGroup := r.Group("/video")
@@ -84,13 +79,8 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 		protectedVideoGroup.POST("/chunk/complete", chunkHandler.CompleteChunkUpload)
 	}
 	// like
-	likeMQ, err := rabbitmq.NewLikeMQ(rmq)
-	if err != nil {
-		log.Printf("LikeMQ init failed (mq disabled): %v", err)
-		likeMQ = nil
-	}
 	likeRepository := video.NewLikeRepository(db)
-	likeService := video.NewLikeService(likeRepository, videoRepository, cache, likeMQ, popularityMQ)
+	likeService := video.NewLikeService(likeRepository, videoRepository)
 	likeHandler := video.NewLikeHandler(likeService)
 	likeGroup := r.Group("/like")
 	protectedLikeGroup := likeGroup.Group("")
@@ -108,7 +98,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 		log.Printf("CommentMQ init failed (mq disabled): %v", err)
 		commentMQ = nil
 	}
-	commentService := video.NewCommentService(commentRepository, videoRepository, cache, commentMQ, popularityMQ)
+	commentService := video.NewCommentService(commentRepository, videoRepository, cache, commentMQ)
 	commentHandler := video.NewCommentHandler(commentService, accountService)
 	commentGroup := r.Group("/comment")
 	{
@@ -204,20 +194,6 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 	worker.StartConsumer(timelineMQ, "video.timeline.update.queue", cache, rmq)
 
 	// SSE notification
-	if rmq != nil {
-		if notifCh, err := rmq.NewChannel(); err == nil {
-			if err := rabbitmq.DeclareTopic(notifCh, "like.events", "notification.like", "like.like"); err != nil {
-				log.Printf("notification like topic init failed: %v", err)
-			}
-			if err := rabbitmq.DeclareTopic(notifCh, "comment.events", "notification.comment", "comment.publish"); err != nil {
-				log.Printf("notification comment topic init failed: %v", err)
-			}
-			if err := rabbitmq.DeclareTopic(notifCh, "social.events", "notification.social", "social.follow"); err != nil {
-				log.Printf("notification social topic init failed: %v", err)
-			}
-			notifCh.Close()
-		}
-	}
 	sseHub := worker.NewSSEHub(db)
 	notifGroup := r.Group("/notification")
 	notifGroup.Use(sseHub.SSERequireAuth())
@@ -228,7 +204,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 			hub := sseHub
 			ctx := context.Background()
 			// 每个 notification worker 独立 Channel + 自动重连
-			for _, q := range []string{"notification.like", "notification.comment", "notification.social"} {
+			for _, q := range []string{rabbitmq.CommentNotificationQueue, rabbitmq.SocialNotificationQueue} {
 				go func(queue string) {
 					for {
 						ch, err := rmq.NewChannel()

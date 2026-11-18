@@ -2,7 +2,7 @@
   "info": {
     "name": "FeedSystem API (All-in-One)",
     "_postman_id": "1a41aef7-6f8a-4bc4-8f55-0c6b12b930d2",
-    "description": "All endpoints in one collection.\n\nSuggested run order:\n1) Account/Register\n2) Account/Login (auto-saves jwt_token)\n3) Account/Find By Username (auto-saves accountId)\n4) Social/* (optional)\n5) Video/Publish (auto-saves videoId)\n6) Like/* (optional)\n7) Feed/* (optional; copy next fields for pagination)\n\nNotes:\n- JWT protected endpoints require Authorization: Bearer {{jwt_token}}.\n- Pagination vars:\n  - /feed/listLatest: response.next_time (unix seconds) -> feedLatestTime\n  - /feed/listLikesCount: response.next_likes_count_before/next_id_before -> feedLikesCountBefore/feedLikesIDBefore",
+    "description": "All endpoints in one collection.\n\nSuggested run order:\n1) Account/Register\n2) Account/Login (auto-saves jwt_token)\n3) Account/Find By Username (auto-saves accountId)\n4) Social/* (optional)\n5) Video/Publish (auto-saves videoId)\n6) Like/* (optional)\n7) Feed/* (optional; copy next fields for pagination)\n\nNotes:\n- JWT protected endpoints require Authorization: Bearer {{jwt_token}}.\n- Like writes return 202 for durable acceptance, not applied state. Keep request IDs for retries; clear likeRequestId/unlikeRequestId only for a new operation (including account/video changes). Read counts via /video/getDetail.\n- Pagination vars:\n  - /feed/listLatest: response.next_time (unix seconds) -> feedLatestTime\n  - /feed/listLikesCount: response.next_likes_count_before/next_id_before -> feedLikesCountBefore/feedLikesIDBefore",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -25,6 +25,8 @@
           "ensure(\"vloggerId\", \"1\");",
           "ensure(\"authorId\", \"1\");",
           "ensure(\"videoId\", \"1\");",
+          "ensure(\"likeRequestId\", pm.variables.replaceIn(\"{{$guid}}\").replace(/-/g, \"\"));",
+          "ensure(\"unlikeRequestId\", pm.variables.replaceIn(\"{{$guid}}\").replace(/-/g, \"\"));",
           "ensure(\"publishedVideoId\", \"\");",
           "ensure(\"feedLimit\", \"10\");",
           "ensure(\"feedLatestTime\", \"0\");",
@@ -419,19 +421,6 @@
       "name": "Like",
       "item": [
         {
-          "name": "Get Likes Count",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"video_id\": {{videoId}}\n}" },
-            "url": {
-              "raw": "{{host}}/like/getLikesCount",
-              "host": ["{{host}}"],
-              "path": ["like", "getLikesCount"]
-            }
-          }
-        },
-        {
           "name": "Is Liked (JWT protected)",
           "request": {
             "method": "POST",
@@ -455,7 +444,7 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "Authorization", "value": "Bearer {{jwt_token}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"video_id\": {{videoId}}\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"request_id\": \"{{likeRequestId}}\",\n  \"video_id\": {{videoId}},\n  \"desired_liked\": true\n}" },
             "url": {
               "raw": "{{host}}/like/like",
               "host": ["{{host}}"],
@@ -471,7 +460,7 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "Authorization", "value": "Bearer {{jwt_token}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"video_id\": {{videoId}}\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"request_id\": \"{{unlikeRequestId}}\",\n  \"video_id\": {{videoId}},\n  \"desired_liked\": false\n}" },
             "url": {
               "raw": "{{host}}/like/unlike",
               "host": ["{{host}}"],

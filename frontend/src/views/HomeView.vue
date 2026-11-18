@@ -19,7 +19,7 @@ const auth = useAuthStore()
 const social = useSocialStore()
 const toast = useToastStore()
 
-const { tab, following, currentState, loadFollowing, ensureTabLoaded, loadMoreIfNeeded } = useVideoFeed()
+const { tab, currentState, ensureTabLoaded, loadMoreIfNeeded } = useVideoFeed()
 const scroller = ref<HTMLDivElement | null>(null)
 const { muted, activeIndex, videoMap, setVideoRef, scrollToIndex, onScroll, playActive, toggleMute, togglePlayPause } = useVideoPlayer(scroller)
 
@@ -28,7 +28,9 @@ async function needLogin() {
   await router.push('/account')
 }
 
-const { likeBusy, followBusy, toggleLike, toggleFollow, share } = useLikeFollow(needLogin)
+const { likeBusy, followBusy, toggleLike, protectLike, toggleFollow, share } = useLikeFollow(needLogin)
+
+watch(() => currentState.value.items, items => items.forEach(item => protectLike(item)), { deep: true, flush: 'sync' })
 
 const drawerVideo = ref<FeedVideoItem | null>(null)
 const drawerOpen = ref(false)
@@ -75,10 +77,6 @@ watch(() => q.value, async () => {
 watch(() => filteredItems.value.length, (len) => {
   if (len === 0) activeIndex.value = 0
   else if (activeIndex.value > len - 1) activeIndex.value = len - 1
-})
-
-watch(() => auth.isLoggedIn, async (v) => {
-  if (tab.value === 'following' && v && following.items.length === 0) await loadFollowing(true)
 })
 
 async function onKeydown(e: KeyboardEvent) {

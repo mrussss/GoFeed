@@ -56,15 +56,6 @@ func (vr *VideoRepository) GetByID(ctx context.Context, id uint) (*Video, error)
 	return &video, nil
 }
 
-func (vr *VideoRepository) UpdateLikesCount(ctx context.Context, id uint, likesCount int64) error {
-	if err := vr.db.WithContext(ctx).Model(&Video{}).
-		Where("id = ?", id).
-		Update("likes_count", likesCount).Error; err != nil {
-		return err
-	}
-	return nil
-}
-
 func (vr *VideoRepository) IsExist(ctx context.Context, id uint) (bool, error) {
 	var video Video
 	if err := vr.db.WithContext(ctx).First(&video, id).Error; err != nil {
@@ -76,29 +67,15 @@ func (vr *VideoRepository) IsExist(ctx context.Context, id uint) (bool, error) {
 	return true, nil
 }
 
-func (vr *VideoRepository) UpdatePopularity(ctx context.Context, id uint, change int64) error {
-	if err := vr.db.WithContext(ctx).Model(&Video{}).
-		Where("id = ?", id).
-		Update("popularity", gorm.Expr("popularity + ?", change)).Error; err != nil {
-		return err
-	}
-	return nil
-}
-
-func (vr *VideoRepository) ChangeLikesCount(ctx context.Context, id uint, change int64) error {
-	if err := vr.db.WithContext(ctx).Model(&Video{}).
-		Where("id = ?", id).
-		UpdateColumn("likes_count", gorm.Expr("GREATEST(likes_count + ?, 0)", change)).Error; err != nil {
-		return err
-	}
-	return nil
-}
-
 func (vr *VideoRepository) ChangePopularity(ctx context.Context, id uint, change int64) error {
-	if err := vr.db.WithContext(ctx).Model(&Video{}).
+	result := vr.db.WithContext(ctx).Model(&Video{}).
 		Where("id = ?", id).
-		UpdateColumn("popularity", gorm.Expr("GREATEST(popularity + ?, 0)", change)).Error; err != nil {
-		return err
+		UpdateColumn("popularity", gorm.Expr("GREATEST(popularity + ?, 0)", change))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
 	}
 	return nil
 }

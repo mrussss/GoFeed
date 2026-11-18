@@ -12,12 +12,12 @@
 |------|------|
 | 账号 | 注册、登录、Refresh Token、改名、改密、登出、头像上传、个人简介、主页统计 |
 | 视频 | 普通上传、5MB 分片上传、断点续传、封面上传、发布、作者作品、详情缓存、#话题标签 |
-| 点赞 | 点赞、取消点赞、是否已赞、已赞列表、RabbitMQ 异步落库、热度更新、SSE 通知 |
-| 评论 | 发布、删除、列表、@username 提及通知、RabbitMQ 异步落库、热度更新 |
+| 点赞 | Request ID 幂等受理、MySQL Command Outbox、四分区微批落库、Revision 状态机、是否已赞与已赞列表 |
+| 评论 | 发布、删除、列表、@username 提及通知、MySQL 同步事务、提交后通知与热度更新 |
 | 关注 | 关注、取关、粉丝列表、关注列表、粉丝/关注计数、SSE 通知 |
 | Feed | 推荐流、关注流、点赞榜、热榜、话题流、冷热分离、游标分页、短视频沉浸播放 |
 | 私信 | 发送私信、按对端用户查看最近 50 条会话 |
-| 通知 | 点赞/评论/关注事件通知、提及通知、SSE 实时推送、通知列表、未读计数、已读标记 |
+| 通知 | 评论/关注事件通知、提及通知、SSE 实时推送、通知列表、未读计数、已读标记；点赞通知暂不产生 |
 | 工程 | Docker Compose、`start.sh`、API/Worker 拆分运行、限流、pprof、健康检查 |
 
 ## Docker Compose 一键启动
@@ -174,4 +174,4 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`，在 Pull Request 以及
 - 本地配置默认开启 pprof：API `localhost:6060`，Worker `localhost:6061`。
 - 上传文件写入 `backend/.run/uploads`；Docker 环境挂载到 `backend_uploads` volume。
 - Redis 用于 Token 缓存、视频实体缓存、Feed 时间线、热榜窗口、分片上传会话。
-- RabbitMQ Topic Exchange 覆盖点赞、评论、关注、热度、视频时间线事件，并配置 DLX。
+- 点赞使用 A1 Command Outbox → A2 Relay / Publisher Confirm → 四分区 Batch Worker → MySQL Revision 事务 → 提交后 Redis 尽力失效 → ACK。评论、关注同步写入 MySQL，提交后用既有 Topic 发送评论和关注通知。评论提交后尽力更新 Redis 热度，视频时间线沿用原 Topic。点赞数用于点赞榜，热榜按热度排序。升级旧 MQ 拓扑时参见 [亮点二冻结报告](docs/GoFeed_亮点二最终冻结报告.md)。

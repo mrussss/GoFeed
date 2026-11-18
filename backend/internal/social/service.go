@@ -32,13 +32,6 @@ func (s *SocialService) Follow(ctx context.Context, social *Social) error {
 	if social.FollowerID == social.VloggerID {
 		return errors.New("can not follow self")
 	}
-	isFollowed, err := s.repo.IsFollowed(ctx, social)
-	if err != nil {
-		return err
-	}
-	if isFollowed {
-		return errors.New("already followed")
-	}
 
 	// 先写 DB，确保数据持久化
 	if err := s.repo.Follow(ctx, social); err != nil {
@@ -66,13 +59,6 @@ func (s *SocialService) Unfollow(ctx context.Context, social *Social) error {
 	if err != nil {
 		return err
 	}
-	isFollowed, err := s.repo.IsFollowed(ctx, social)
-	if err != nil {
-		return err
-	}
-	if !isFollowed {
-		return errors.New("not followed")
-	}
 
 	// 先写 DB
 	if err := s.repo.Unfollow(ctx, social); err != nil {
@@ -82,12 +68,6 @@ func (s *SocialService) Unfollow(ctx context.Context, social *Social) error {
 	// 失效缓存
 	s.invalidateFollowingFeedCache(context.Background(), social.FollowerID)
 
-	// 最后发 MQ
-	if s.socialMQ != nil {
-		if err := s.socialMQ.UnFollow(ctx, social.FollowerID, social.VloggerID); err != nil {
-			log.Printf("social MQ UnFollow 发布失败: %v", err)
-		}
-	}
 	return nil
 }
 
@@ -123,16 +103,4 @@ func (s *SocialService) CountFollowers(ctx context.Context, vloggerID uint) (int
 
 func (s *SocialService) CountVloggers(ctx context.Context, followerID uint) (int64, error) {
 	return s.repo.CountVloggers(ctx, followerID)
-}
-
-func (s *SocialService) IsFollowed(ctx context.Context, social *Social) (bool, error) {
-	_, err := s.accountrepo.FindByID(ctx, social.FollowerID)
-	if err != nil {
-		return false, err
-	}
-	_, err = s.accountrepo.FindByID(ctx, social.VloggerID)
-	if err != nil {
-		return false, err
-	}
-	return s.repo.IsFollowed(ctx, social)
 }
