@@ -1,6 +1,7 @@
 package social
 
 import (
+	"errors"
 	"feedsystem_video_go/internal/account"
 	"feedsystem_video_go/internal/apierror"
 	"feedsystem_video_go/internal/middleware/jwt"
@@ -37,7 +38,11 @@ func (h *SocialHandler) Follow(c *gin.Context) {
 		VloggerID:  req.VloggerID,
 	}
 	if err := h.service.Follow(c.Request.Context(), social); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		status := apierror.ClassifyHTTPStatus(err)
+		if errors.Is(err, ErrAlreadyFollowed) {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "followed"})

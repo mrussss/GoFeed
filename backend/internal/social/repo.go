@@ -2,10 +2,14 @@ package social
 
 import (
 	"context"
+	"errors"
 	"feedsystem_video_go/internal/account"
 
+	mysql "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )
+
+var ErrAlreadyFollowed = errors.New("already followed")
 
 type SocialRepository struct {
 	db *gorm.DB
@@ -16,13 +20,25 @@ func NewSocialRepository(db *gorm.DB) *SocialRepository {
 }
 
 func (r *SocialRepository) Follow(ctx context.Context, social *Social) error {
-	return r.db.WithContext(ctx).Create(social).Error
+	err := r.db.WithContext(ctx).Create(social).Error
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		return ErrAlreadyFollowed
+	}
+	return err
 }
 
 func (r *SocialRepository) Unfollow(ctx context.Context, social *Social) error {
-	return r.db.WithContext(ctx).
+	result := r.db.WithContext(ctx).
 		Where("follower_id = ? AND vlogger_id = ?", social.FollowerID, social.VloggerID).
-		Delete(&Social{}).Error
+		Delete(&Social{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (r *SocialRepository) GetAllFollowers(ctx context.Context, VloggerID uint) ([]*account.Account, error) {
@@ -79,17 +95,6 @@ func (r *SocialRepository) GetAllVloggers(ctx context.Context, FollowerID uint) 
 		return nil, err
 	}
 	return vloggers, nil
-}
-
-func (r *SocialRepository) IsFollowed(ctx context.Context, social *Social) (bool, error) {
-	var count int64
-	if err := r.db.WithContext(ctx).
-		Model(&Social{}).
-		Where("follower_id = ? AND vlogger_id = ?", social.FollowerID, social.VloggerID).
-		Count(&count).Error; err != nil {
-		return false, err
-	}
-	return count > 0, nil
 }
 
 func (r *SocialRepository) CountFollowers(ctx context.Context, vloggerID uint) (int64, error) {

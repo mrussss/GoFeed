@@ -426,7 +426,8 @@ func (f *FeedService) ListByFollowing(ctx context.Context, limit int, latestBefo
 
 func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf int64, offset int, viewerAccountID uint, latestPopularity int64, latestBefore time.Time, latestIDBefore uint) (ListByPopularityResponse, error) {
 	// Redis 热榜（稳定分页：as_of + offset）
-	if f.rediscache != nil {
+	// Continue a MySQL page with its cursor even if Redis has recovered.
+	if f.rediscache != nil && (reqAsOf > 0 || latestIDBefore == 0) {
 		asOf := time.Now().UTC().Truncate(time.Minute)
 		if reqAsOf > 0 {
 			asOf = time.Unix(reqAsOf, 0).UTC().Truncate(time.Minute)

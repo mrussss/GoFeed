@@ -23,6 +23,7 @@ const state = reactive({
   limit: 10,
   asOf: 0,
   nextOffset: 0,
+  dbCursor: undefined as { latest_popularity: number; latest_before: string; latest_id_before: number } | undefined,
 })
 
 const { likeBusy, toggleLike, protectLike } = useLikeFollow(() => toast.error('请先登录'))
@@ -34,18 +35,28 @@ async function loadHot(reset: boolean) {
   state.loading = true
   state.error = ''
   const accountId = auth.claims?.account_id
+  const asOf = reset ? 0 : state.asOf
   try {
     const res = await feedApi.listByPopularity({
       limit: state.limit,
-      as_of: reset ? 0 : state.asOf,
+      as_of: asOf,
       offset: reset ? 0 : state.nextOffset,
+      ...(!reset && asOf === 0 ? state.dbCursor : undefined),
     })
     if (auth.claims?.account_id !== accountId) return
     res.video_list.forEach(item => protectLike(item, true))
     state.hasMore = res.has_more
     state.asOf = res.as_of
     state.nextOffset = res.next_offset
-    state.items = reset ? res.video_list : state.items.concat(res.video_list)
+    state.dbCursor = res.as_of === 0 && res.next_latest_before && res.next_latest_id_before
+      ? {
+          latest_popularity: res.next_latest_popularity ?? 0,
+          latest_before: res.next_latest_before,
+          latest_id_before: res.next_latest_id_before,
+        }
+      : undefined
+    const switchedToDatabase = asOf > 0 && res.as_of === 0
+    state.items = reset || switchedToDatabase ? res.video_list : state.items.concat(res.video_list)
   } catch (e) {
     state.error = e instanceof ApiError ? e.message : String(e)
   } finally {

@@ -423,7 +423,7 @@ func TestLikeCommandPipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, readCache := range []*rediscache.Client{nil, failedCache} {
-		v, err := video.NewVideoService(video.NewVideoRepository(db), readCache, nil).GetDetail(ctx, 10)
+		v, err := video.NewVideoService(video.NewVideoRepository(db), readCache).GetDetail(ctx, 10)
 		if err != nil || v.LikesCount != 1 {
 			t.Fatalf("detail cache fallback: %+v %v", v, err)
 		}

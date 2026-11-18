@@ -11,8 +11,8 @@
 | ORM 框架        | GORM                         | 模型定义、CRUD、启动时 AutoMigrate 自动迁移表结构。          |
 | 持久化          | MySQL                        | 存储 `Account / Video / Like / Comment / Social / Tag / VideoTag / Message / Notification / OutboxMsg / CommandOutbox` 等表及统计字段（如 likes_count、popularity）。 |
 | 缓存/排行榜     | Redis（可选）                | Token/Refresh Token 缓存、Feed 时间线、视频实体缓存、视频详情缓存、热榜 ZSET、分片上传会话、接口限流计数。 |
-| 消息队列 | RabbitMQ | 点赞命令使用持久化 Direct Exchange `like.commands` 与四个固定分区；评论、关注、热度、视频时间线沿用各自 Topic 链路。MQ 暂时不可用时，已持久化点赞命令留在 MySQL 等待投递。 |
-| 异步执行 | Worker（Go） | `cmd/worker` 启动单个 LikeCommandRelay、四分区 LikeCommandBatchWorker，以及原有 CommentWorker/SocialWorker/PopularityWorker；API 进程保留视频时间线与评论/关注通知消费者。 |
+| 消息队列 | RabbitMQ | 点赞命令使用持久化 Direct Exchange `like.commands` 与四个固定分区；评论与关注通知、视频时间线沿用各自 Topic 链路。MQ 暂时不可用时，已持久化点赞命令留在 MySQL 等待投递。 |
+| 异步执行 | Worker（Go） | `cmd/worker` 启动单个 LikeCommandRelay、四分区 LikeCommandBatchWorker；API 进程保留视频时间线与评论/关注通知消费者。 |
 | 文件存储        | Local Disk（可替换对象存储） | 视频与封面文件存放本地目录（生产可替换为 OSS/S3/MinIO）。    |
 | 容器化/依赖编排 | Docker / Docker Compose      | 一键拉起 RabbitMQ 等依赖（可配合 `./start.sh`），便于本地联调与部署环境一致性。 |
 | 接口调试        | Postman Collection           | `test/postman.json`：预置变量、批量跑接口与部分断言脚本。    |
@@ -89,7 +89,7 @@ MySQL 是点赞关系与总数的权威来源。接口设置目标状态，不�
 - **连接恢复**：消费者组任一成员失败后取消并等待整组退出，固定等待 2 秒再重新 Dial、建 Channel、声明拓扑和 Consume。不引入多 Relay、动态分区、独立去重表或可靠缓存同步服务。
 - **前端**：使用安全随机数生成 128-bit Request ID，发送前按账号/视频持久化完整请求。未知结果复用原请求；同一 pair 只允许一个未解决请求。立即乐观更新，明确拒绝时回滚；受理后暂保留显示，匹配的读取或受理满 60 秒后的新读取恢复服务器状态。未确定请求不会因显示期限被丢弃。客户端不分配 Revision，存储命名空间与过期协议隔离。
 
-点赞通知目前不由命令链路产生，点赞不再独立触发热度增量；评论、关注及其通知保持各自链路。本阶段只保证点赞关系与总数的可靠处理。
+点赞通知目前不由命令链路产生，点赞不再独立触发热度增量；评论和关注同步写入 MySQL，通知与 Redis 热度是提交后的尽力而为操作。本阶段只保证点赞关系与总数的可靠处理。
 
 旧环境的消息与服务器资源不会被应用自动删除。切换前停止旧生产端、确认历史消息已核对处理，再停用旧消费实例。非空资源先备份并由管理员制定处理方案；确认无待处理业务消息后才人工清理。程序不保留旧运行协议或自动检查旧队列的兼容分支。
 
@@ -104,9 +104,9 @@ MySQL 是点赞关系与总数的权威来源。接口设置目标状态，不�
 | 层级              | 方法/路由                | 输入 -> 输出                        | 存储(MySQL/Redis/MQ)           | 核心说明                                                     |
 | ----------------- | ------------------------ | ----------------------------------- | ------------------------------ | ------------------------------------------------------------ |
 | Handler           | POST `/comment/listAll`  | `{video_id}` -> `{comments[]}`      | MySQL ✅                        | 列出某视频最多 200 条评论，按 `created_at ASC` 排序。          |
-| Handler           | POST `/comment/publish`  | `{video_id,content}` -> `{}`        | MQ ✅(可选) / MySQL ✅ / Redis ✅ | 发布 `comment.events`（`comment.publish`）并触发 `popularity + 1`；内容中的 `@username` 会写提及通知。 |
-| Handler           | POST `/comment/delete`   | `{comment_id}` -> `{}`              | MQ ✅(可选) / MySQL ✅ / Redis ✅ | 仅作者可删；发布 `comment.delete`；必要时失效缓存/更新热度。 |
-| Service(建议命名) | `ListAll/Publish/Delete/NotifyMentions` | -                          | -                              | 评论写入与热度增量解耦到 MQ/Worker；提及通知直接写 `notifications` 表。 |
+| Handler           | POST `/comment/publish`  | `{video_id,content}` -> `{}`        | MQ ✅(可选) / MySQL ✅ / Redis ✅ | 事务写评论并增加 MySQL 累计热度。提交后失效视频双 Key、增加 Redis 窗口热度，发送作者通知并写提及通知。 |
+| Handler           | POST `/comment/delete`   | `{comment_id}` -> `{}`              | MySQL ✅ | 作者权限校验后同步删除，保留累计热度。 |
+| Service(建议命名) | `ListAll/Publish/Delete/NotifyMentions` | -                          | -                              | 发布和删除的业务结果以 MySQL 为准。提及通知在提交后写入 `notifications` 表。 |
 
 ### 关注系统
 
@@ -118,12 +118,12 @@ MySQL 是点赞关系与总数的权威来源。接口设置目标状态，不�
 
 | 层级              | 方法/路由                                        | 输入 -> 输出                       | 存储(MySQL/MQ)       | 核心说明                                     |
 | ----------------- | ------------------------------------------------ | ---------------------------------- | -------------------- | -------------------------------------------- |
-| Handler           | POST `/social/follow`                            | `{vlogger_id}` -> `{}`             | MQ ✅(可选) / MySQL ✅ | JWT 保护；关注事件可异步写入。               |
-| Handler           | POST `/social/unfollow`                          | `{vlogger_id}` -> `{}`             | MQ ✅(可选) / MySQL ✅ | 取关事件可异步写入。                         |
+| Handler           | POST `/social/follow`                            | `{vlogger_id}` -> `{}`             | MQ ✅(可选) / MySQL ✅ | JWT 保护；同步写入关系，重复关注返回 409。提交后失效关注流缓存并发送通知。               |
+| Handler           | POST `/social/unfollow`                          | `{vlogger_id}` -> `{}`             | MySQL ✅ | 同步删除关系并失效关注流缓存。                         |
 | Handler           | POST `/social/getAllFollowers`                   | `{vlogger_id?}` -> `{followers[]}` | MySQL ✅              | vlogger_id 可空：默认当前登录账号。          |
 | Handler           | POST `/social/getAllVloggers`                    | `{follower_id?}` -> `{vloggers[]}` | MySQL ✅              | follower_id 可空：默认当前登录账号。         |
 | Handler           | POST `/social/getCounts`                         | `{}` -> `{follower_count,vlogger_count}` | MySQL ✅       | 当前登录用户的粉丝数与关注数。               |
-| Service(建议命名) | `Follow/Unfollow/GetAllFollowers/GetAllVloggers/GetCounts` | -                         | -                    | follow/unfollow 可走 MQ 异步，异常降级直写；关注事件同步触发通知。 |
+| Service(建议命名) | `Follow/Unfollow/GetAllFollowers/GetAllVloggers/GetCounts` | -                         | -                    | 联合唯一键保护关系，并发时由数据库拒绝重复插入。MQ 仅用于关注通知。 |
 
 ### Feed系统
 
@@ -192,9 +192,8 @@ MySQL 是点赞关系与总数的权威来源。接口设置目标状态，不�
 | 业务模块 | Exchange / RoutingKey                                 | 事件类型      | Payload（示例字段）                                 | 消费者（Worker）   | 失败/降级策略                                                |
 | -------- | ----------------------------------------------------- | ------------- | --------------------------------------------------- | ------------------ | ------------------------------------------------------------ |
 | 点赞命令 | `like.commands` / routing key `0`～`3` | 目标状态命令 | `{command_id,request_id,account_id,video_id,desired_liked,revision}`，command_id/revision 为字符串 | 四个 LikeCommandBatchWorker | Relay 获 Confirm ACK 且无 Return 才标记 published_at；不确定结果保留待发布。Worker 事务成功后 ACK；重投依赖 applied_revision 幂等，不按请求条数加减计数。 |
-| 评论     | `comment.events` / `comment.publish` `comment.delete` | 发布/删除评论 | `{author_id, username, video_id, comment_id?, content?, ts}` | `CommentWorker` / `NotificationWorker` | 发布失败：降级直写 MySQL；热度增量事件失败则直接更新 Redis；评论成功给视频作者生成通知。 |
-| 关注     | `social.events` / `social.follow` `social.unfollow`   | 关注/取关     | `{follower_id, vlogger_id, ts}`                     | `SocialWorker` / `NotificationWorker` | 发布失败：降级直写 MySQL；关注成功给被关注者生成通知。       |
-| 热度增量 | `video.popularity.events` / `video.popularity.update` | 热度更新      | `{video_id, delta, reason, ts}`                     | `PopularityWorker` | `UpdatePopularity` 发布失败：直接更新 Redis 热榜；并触发详情缓存失效（如需要）。 |
+| 评论通知 | `comment.events` / `comment.publish` | 评论提交后 | `{author_id, video_id, event_id, occurred_at}` | `NotificationWorker`（`notification.comment`） | 尽力通知视频作者。 |
+| 关注通知 | `social.events` / `social.follow` | 关注提交后 | `{follower_id, vlogger_id, event_id, occurred_at}` | `NotificationWorker`（`notification.social`） | 尽力通知被关注者。 |
 | 时间线   | `video.timeline.events` / `video.timeline.publish`    | 新视频发布时间线 | `{event_id, video_id, create_time, occurred_at}` | `TimelineConsumer` | `Publish` 事务写 `outbox_msgs`；OutboxPoller 投递 MQ；TimelineConsumer 写 Redis `feed:global_timeline`。 |
 | 死信 | `dlx.events` / `#` | 其他业务失败消息 | 原始消息 | DLX Queue | 其他业务沿用既有 DLX。点赞命令数据库失败时关闭消费者 Channel，让未 ACK 消息重投，不使用固定次数后 ACK 丢弃。 |
 
