@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"feedsystem_video_go/internal/middleware/rabbitmq"
 	"feedsystem_video_go/internal/video"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 
 	"gorm.io/gorm"
 )
+
+const likeCommandMarkBatchSize = 50
 
 type LikeCommandPublisher interface {
 	Publish(context.Context, rabbitmq.LikeCommandEvent) error
@@ -39,20 +42,48 @@ func (r *LikeCommandRelay) RunOnce(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	published := 0
+	confirmed := make([]uint64, 0, likeCommandMarkBatchSize)
+	markConfirmed := func(markCtx context.Context) error {
+		if len(confirmed) == 0 {
+			return nil
+		}
+		// Failed updates leave the IDs pending for replay with the same MessageId/body.
+		result := r.db.WithContext(markCtx).Model(&video.CommandOutbox{}).
+			Where("id IN ? AND published_at IS NULL", confirmed).
+			UpdateColumn("published_at", gorm.Expr("NOW(3)"))
+		if result.Error != nil {
+			return fmt.Errorf("mark %d confirmed like commands: %w", len(confirmed), result.Error)
+		}
+		published += int(result.RowsAffected)
+		if result.RowsAffected != int64(len(confirmed)) {
+			return fmt.Errorf("mark confirmed like commands: updated %d rows, expected %d", result.RowsAffected, len(confirmed))
+		}
+		confirmed = confirmed[:0]
+		return nil
+	}
 	for _, command := range commands {
 		event := rabbitmq.LikeCommandEvent{CommandID: command.ID, RequestID: command.RequestID, AccountID: command.AccountID, VideoID: command.VideoID, DesiredLiked: command.DesiredLiked, Revision: command.Revision}
 		if err := r.publisher.Publish(ctx, event); err != nil {
-			return published, fmt.Errorf("publish like command %d: %w", command.ID, err)
+			publishErr := fmt.Errorf("publish like command %d: %w", command.ID, err)
+			markCtx := ctx
+			if len(confirmed) != 0 && ctx.Err() != nil {
+				// Give confirmed commands a bounded write during Relay shutdown.
+				var cancel context.CancelFunc
+				markCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+				defer cancel()
+			}
+			markErr := markConfirmed(markCtx)
+			return published, errors.Join(publishErr, markErr)
 		}
-		// No transaction is held while waiting for RabbitMQ. A failure here leaves
-		// the row pending; the next pass republishes it with the same MessageId/body.
-		result := r.db.WithContext(ctx).Model(&video.CommandOutbox{}).Where("id = ? AND published_at IS NULL", command.ID).UpdateColumn("published_at", gorm.Expr("NOW(3)"))
-		if result.Error != nil {
-			return published, fmt.Errorf("mark like command %d: %w", command.ID, result.Error)
+		confirmed = append(confirmed, command.ID)
+		if len(confirmed) == likeCommandMarkBatchSize {
+			if err := markConfirmed(ctx); err != nil {
+				return published, err
+			}
 		}
-		published += int(result.RowsAffected)
 	}
-	return published, nil
+	err := markConfirmed(ctx)
+	return published, err
 }
 
 func (r *LikeCommandRelay) Run(ctx context.Context) error {

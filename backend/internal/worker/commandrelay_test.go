@@ -82,7 +82,7 @@ func TestLikeCommandRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sqlDB.Close()
-	if err := db.AutoMigrate(&video.Like{}, &video.CommandOutbox{}); err != nil {
+	if err := db.AutoMigrate(&video.Like{}, &video.CommandOutbox{}, &video.Video{}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -113,6 +113,107 @@ func TestLikeCommandRelay(t *testing.T) {
 			t.Fatal("failed/unknown publish was marked successful")
 		}
 	}
+	seedCommands := func(t *testing.T, size int) []video.CommandOutbox {
+		t.Helper()
+		commands := make([]video.CommandOutbox, size)
+		for i := range commands {
+			commands[i] = video.CommandOutbox{AccountID: uint(i + 100), RequestID: fmt.Sprint(i), VideoID: 1, Revision: 1}
+		}
+		if err := db.Create(&commands).Error; err != nil {
+			t.Fatal(err)
+		}
+		return commands
+	}
+	pendingCount := func(t *testing.T) int64 {
+		t.Helper()
+		var count int64
+		if err := db.Model(&video.CommandOutbox{}).Where("published_at IS NULL").Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	t.Run("marks_at_fifty_then_flushes_remainder", func(t *testing.T) {
+		reset(t)
+		commands := seedCommands(t, 55)
+		var updates []int64
+		const callback = "a2_capture_mark_batches"
+		if err := db.Callback().Update().After("gorm:update").Register(callback, func(tx *gorm.DB) {
+			if tx.Statement.Table == "command_outbox" {
+				updates = append(updates, tx.RowsAffected)
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		defer db.Callback().Update().Remove(callback)
+		sent := 0
+		p := commandPublisherFunc(func(_ context.Context, e rabbitmq.LikeCommandEvent) error {
+			if e.CommandID != commands[sent].ID {
+				t.Fatalf("publish out of order at offset %d: %d", sent, e.CommandID)
+			}
+			sent++
+			if sent == 50 && pendingCount(t) != 55 {
+				t.Fatal("marked before the 50th Confirm")
+			}
+			if sent == 51 && pendingCount(t) != 5 {
+				t.Fatal("first 50 confirmed rows were not marked")
+			}
+			return nil
+		})
+		relay := worker.NewLikeCommandRelay(db, p, time.Millisecond)
+		if n, err := relay.RunOnce(ctx); n != 55 || err != nil || pendingCount(t) != 0 {
+			t.Fatalf("result: %d %v", n, err)
+		}
+		if n, err := relay.RunOnce(ctx); n != 0 || err != nil {
+			t.Fatalf("empty result: %d %v", n, err)
+		}
+		if len(updates) != 2 || updates[0] != 50 || updates[1] != 5 {
+			t.Fatalf("rows per update: %v, want [50 5]", updates)
+		}
+	})
+	t.Run("flushes_confirmed_prefix_on_publish_error", func(t *testing.T) {
+		reset(t)
+		commands := seedCommands(t, 55)
+		publishCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		failure := &rabbitmq.PublishError{Code: "connection_lost", Unknown: true}
+		sent := 0
+		p := commandPublisherFunc(func(context.Context, rabbitmq.LikeCommandEvent) error {
+			sent++
+			if sent == 30 {
+				cancel()
+				return failure
+			}
+			return nil
+		})
+		if n, err := worker.NewLikeCommandRelay(db, p, time.Millisecond).RunOnce(publishCtx); n != 29 || !errors.Is(err, failure) {
+			t.Fatalf("result: %d %v", n, err)
+		}
+		var pending []uint64
+		if err := db.Model(&video.CommandOutbox{}).Where("published_at IS NULL").Order("id").Pluck("id", &pending).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(pending) != len(commands)-29 {
+			t.Fatalf("pending count: %d", len(pending))
+		}
+		for i, id := range pending {
+			if id != commands[i+29].ID {
+				t.Fatalf("wrong command remained pending: %d at offset %d", id, i)
+			}
+		}
+	})
+	t.Run("unexpected_rows_affected_is_an_error", func(t *testing.T) {
+		reset(t)
+		commands := seedCommands(t, 2)
+		p := commandPublisherFunc(func(_ context.Context, e rabbitmq.LikeCommandEvent) error {
+			if e.CommandID == commands[0].ID {
+				return db.Model(&commands[0]).UpdateColumn("published_at", gorm.Expr("NOW(3)")).Error
+			}
+			return nil
+		})
+		if n, err := worker.NewLikeCommandRelay(db, p, time.Millisecond).RunOnce(ctx); n != 1 || err == nil || !strings.Contains(err.Error(), "updated 1 rows, expected 2") {
+			t.Fatalf("result: %d %v", n, err)
+		}
+	})
 	for _, code := range []string{"broker_nack", "unroutable", "confirm_timeout", "connection_lost"} {
 		t.Run("failure_retains_pending/"+code, func(t *testing.T) {
 			reset(t)
@@ -138,23 +239,31 @@ func TestLikeCommandRelay(t *testing.T) {
 	})
 	t.Run("mark_failure_republishes_same_identity", func(t *testing.T) {
 		reset(t)
-		c := insert(t)
+		commands := seedCommands(t, 2)
 		var sent []rabbitmq.LikeCommandEvent
-		p := commandPublisherFunc(func(_ context.Context, e rabbitmq.LikeCommandEvent) error { sent = append(sent, e); return nil })
-		if err := db.Exec(`CREATE TRIGGER a2_fail_mark BEFORE UPDATE ON command_outbox FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='a2 mark failure'`).Error; err != nil {
+		p := commandPublisherFunc(func(_ context.Context, e rabbitmq.LikeCommandEvent) error {
+			sent = append(sent, e)
+			return nil
+		})
+		trigger := fmt.Sprintf(`CREATE TRIGGER a2_fail_mark BEFORE UPDATE ON command_outbox FOR EACH ROW
+			BEGIN IF NEW.id = %d THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='a2 mark failure'; END IF; END`, commands[1].ID)
+		if err := db.Exec(trigger).Error; err != nil {
 			t.Fatal(err)
 		}
 		if n, err := worker.NewLikeCommandRelay(db, p, time.Millisecond).RunOnce(ctx); n != 0 || err == nil {
-			t.Fatalf("result: %d %v", n, err)
+			t.Fatalf("mark failure: %d %v", n, err)
 		}
-		assertPending(t, c.ID)
+		if pendingCount(t) != int64(len(commands)) {
+			t.Fatal("failed update partly marked the batch")
+		}
 		if err := db.Exec("DROP TRIGGER a2_fail_mark").Error; err != nil {
 			t.Fatal(err)
 		}
-		if n, err := worker.NewLikeCommandRelay(db, p, time.Millisecond).RunOnce(ctx); n != 1 || err != nil {
+		if n, err := worker.NewLikeCommandRelay(db, p, time.Millisecond).RunOnce(ctx); n != len(commands) || err != nil {
 			t.Fatalf("retry: %d %v", n, err)
 		}
-		if len(sent) != 2 || sent[0] != sent[1] || sent[0].CommandID != c.ID {
+		if len(sent) != 4 || sent[0] != sent[2] || sent[1] != sent[3] ||
+			sent[0].CommandID != commands[0].ID || sent[1].CommandID != commands[1].ID {
 			t.Fatalf("retry identity changed: %+v", sent)
 		}
 	})
@@ -360,10 +469,28 @@ func TestLikeCommandRelay(t *testing.T) {
 		if n, err := worker.NewLikeCommandRelay(db, p, time.Millisecond).RunOnce(ctx); n != 1 || err != nil {
 			t.Fatalf("restarted relay retry: %d %v", n, err)
 		}
+		if err := db.Create(&video.Video{ID: c.VideoID, AuthorID: c.AccountID}).Error; err != nil {
+			t.Fatal(err)
+		}
+		batchWorker := worker.NewLikeCommandBatchWorker(ch, video.NewLikeRepository(db), partition, nil)
 		for i := 0; i < 2; i++ {
-			duplicate, ok, err := ch.Get(rabbitmq.LikeCommandQueue(partition), true)
+			duplicate, ok, err := ch.Get(rabbitmq.LikeCommandQueue(partition), false)
 			if err != nil || !ok || duplicate.MessageId != d.MessageId || string(duplicate.Body) != string(d.Body) {
 				t.Fatalf("duplicate identity changed: %v %v", ok, err)
+			}
+			if err := batchWorker.HandleBatch(ctx, []amqp.Delivery{duplicate}); err != nil {
+				t.Fatal(err)
+			}
+			var row video.Like
+			var v video.Video
+			if err := db.Where("account_id=? AND video_id=?", c.AccountID, c.VideoID).Take(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.First(&v, c.VideoID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if row.Status != 1 || row.AppliedRevision != c.Revision || row.NextRevision != c.Revision || v.LikesCount != 1 {
+				t.Fatalf("duplicate delivery changed relation or count: %+v count=%d", row, v.LikesCount)
 			}
 		}
 
