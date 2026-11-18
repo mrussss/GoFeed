@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"feedsystem_video_go/internal/account"
+	"feedsystem_video_go/internal/config"
 	"feedsystem_video_go/internal/feed"
 	"feedsystem_video_go/internal/message"
 	"feedsystem_video_go/internal/middleware/jwt"
@@ -19,7 +20,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *gin.Engine {
+func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ, followingFeed ...config.FollowingFeedConfig) *gin.Engine {
 	r := gin.Default()
 	if err := r.SetTrustedProxies(nil); err != nil {
 		log.Printf("SetTrustedProxies failed: %v", err)
@@ -59,7 +60,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 	}
 	// video
 	videoRepository := video.NewVideoRepository(db)
-	videoService := video.NewVideoService(videoRepository, cache)
+	videoService := video.NewVideoService(videoRepository, cache, followingFeed...)
 	videoHandler := video.NewVideoHandler(videoService, accountService)
 	chunkHandler := video.NewChunkUploadHandler(cache)
 	videoGroup := r.Group("/video")

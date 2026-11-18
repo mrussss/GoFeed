@@ -2,25 +2,32 @@ package video
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
 	"feedsystem_video_go/internal/apierror"
+	"feedsystem_video_go/internal/config"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 
 	"gorm.io/gorm"
 )
 
 type VideoService struct {
-	repo     *VideoRepository
-	cache    *rediscache.Client
-	cacheTTL time.Duration
+	repo          *VideoRepository
+	cache         *rediscache.Client
+	cacheTTL      time.Duration
+	followingFeed config.FollowingFeedConfig
 }
 
-func NewVideoService(repo *VideoRepository, cache *rediscache.Client) *VideoService {
-	return &VideoService{repo: repo, cache: cache, cacheTTL: 60 * time.Second}
+func NewVideoService(repo *VideoRepository, cache *rediscache.Client, followingFeed ...config.FollowingFeedConfig) *VideoService {
+	thresholds := config.DefaultFollowingFeedConfig()
+	if len(followingFeed) > 0 {
+		thresholds = followingFeed[0]
+	}
+	return &VideoService{repo: repo, cache: cache, cacheTTL: 60 * time.Second, followingFeed: thresholds}
 }
 
 func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
@@ -41,17 +48,31 @@ func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
 		return errors.New("cover url is required")
 	}
 
-	//事务保证视频写入库和消息写入本地消息表的一致性
-	err := vs.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	// READ COMMITTED gives COUNT a fresh committed snapshot after acquiring
+	// the author lock. Follow/Unfollow can continue independently.
+	return vs.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		mode, err := vs.resolveDistributionMode(ctx, tx, video.AuthorID)
+		if err != nil {
+			return err
+		}
+		video.DistributionMode = &mode
 		if err := tx.Create(video).Error; err != nil {
 			return err
 		}
 
+		eventID, err := randHex(16)
+		if err != nil {
+			return err
+		}
+		authorID := video.AuthorID
 		msg := OutboxMsg{
-			VideoID:    video.ID,
-			EventType:  "video_published",
-			Status:     "pending",
-			CreateTime: video.CreateTime,
+			VideoID:          video.ID,
+			EventType:        "video_published",
+			Status:           "pending",
+			CreateTime:       video.CreateTime,
+			EventID:          &eventID,
+			AuthorID:         &authorID,
+			DistributionMode: &mode,
 		}
 
 		if err := tx.Create(&msg).Error; err != nil {
@@ -69,9 +90,7 @@ func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
 			}
 		}
 		return nil
-	})
-	return err
-
+	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 }
 
 func (vs *VideoService) Delete(ctx context.Context, id uint, authorID uint) error {

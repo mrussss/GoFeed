@@ -14,7 +14,18 @@ type Config struct {
 	Database            DatabaseConfig      `yaml:"database"`
 	Redis               RedisConfig         `yaml:"redis"`
 	RabbitMQ            RabbitMQConfig      `yaml:"rabbitmq"`
+	FollowingFeed       FollowingFeedConfig `yaml:"following_feed"`
 	ObservabilityConfig ObservabilityConfig `yaml:"observability"`
+}
+
+type FollowingFeedConfig struct {
+	LowThreshold     int64 `yaml:"low_threshold"`
+	InitialThreshold int64 `yaml:"initial_threshold"`
+	HighThreshold    int64 `yaml:"high_threshold"`
+}
+
+func DefaultFollowingFeedConfig() FollowingFeedConfig {
+	return FollowingFeedConfig{LowThreshold: 9000, InitialThreshold: 10000, HighThreshold: 11000}
 }
 
 type ServerConfig struct {
@@ -60,9 +71,13 @@ func Load(filename string) (Config, error) {
 		return Config{}, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var cfg Config
+	cfg := Config{FollowingFeed: DefaultFollowingFeedConfig()}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", filename, err)
+	}
+	thresholds := cfg.FollowingFeed
+	if thresholds.LowThreshold < 0 || thresholds.LowThreshold >= thresholds.InitialThreshold || thresholds.InitialThreshold >= thresholds.HighThreshold {
+		return Config{}, errors.New("following_feed requires 0 <= low_threshold < initial_threshold < high_threshold")
 	}
 
 	ApplyEnvOverrides(&cfg)
@@ -144,6 +159,7 @@ func LoadLocalDev(filename string) (Config, bool, error) {
 
 func DefaultLocalConfig() Config {
 	cfg := Config{
+		FollowingFeed: DefaultFollowingFeedConfig(),
 		Server: ServerConfig{
 			Port: 8080,
 		},
