@@ -50,12 +50,22 @@ func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
 
 	// READ COMMITTED gives COUNT a fresh committed snapshot after acquiring
 	// the author lock. Follow/Unfollow can continue independently.
-	return vs.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	requestedTime := video.CreateTime
+	err := vs.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		mode, err := vs.resolveDistributionMode(ctx, tx, video.AuthorID)
 		if err != nil {
 			return err
 		}
 		video.DistributionMode = &mode
+		// Assign server time after mode resolution to exclude prior lock wait.
+		// This narrows the timing window without establishing a global commit
+		// order between Publish and Follow/Unfollow.
+		if video.CreateTime.IsZero() {
+			video.CreateTime = time.Now()
+		}
+		// Preserve an explicit service caller's time at DATETIME(3) and
+		// timeline event precision.
+		video.CreateTime = video.CreateTime.Truncate(time.Millisecond)
 		if err := tx.Create(video).Error; err != nil {
 			return err
 		}
@@ -91,6 +101,10 @@ func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
 		}
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		video.CreateTime = requestedTime
+	}
+	return err
 }
 
 func (vs *VideoService) Delete(ctx context.Context, id uint, authorID uint) error {

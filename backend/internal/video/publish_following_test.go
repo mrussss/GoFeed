@@ -112,7 +112,8 @@ func TestPublishFollowingMySQL(t *testing.T) {
 		if stored.DistributionMode == nil || *stored.DistributionMode != want ||
 			event.DistributionMode == nil || *event.DistributionMode != want ||
 			event.AuthorID == nil || *event.AuthorID != stored.AuthorID ||
-			event.EventID == nil || len(*event.EventID) != 32 || event.EventType != "video_published" {
+			event.EventID == nil || len(*event.EventID) != 32 || event.EventType != "video_published" ||
+			stored.CreateTime.IsZero() || !stored.CreateTime.Equal(event.CreateTime) {
 			t.Fatalf("wrong snapshot for video %d: %+v %+v", id, stored, event)
 		}
 		return *event.EventID
@@ -156,10 +157,14 @@ func TestPublishFollowingMySQL(t *testing.T) {
 	} {
 		t.Run("rollback_"+tc.table, func(t *testing.T) {
 			exec(t, tc.setup)
-			err := svc.Publish(ctx, newVideo())
+			attempt := newVideo()
+			err := svc.Publish(ctx, attempt)
 			exec(t, tc.cleanup)
 			if err == nil {
 				t.Fatal("expected Publish to fail")
+			}
+			if !attempt.CreateTime.IsZero() {
+				t.Fatal("failed Publish left a generated timestamp on the input")
 			}
 			state(t, video.DistributionPush)
 			for _, model := range []any{&video.Video{}, &video.OutboxMsg{}} {
@@ -201,7 +206,99 @@ func TestPublishFollowingMySQL(t *testing.T) {
 		t.Fatalf("migration changed event ID from %s to %s", originalEventID, got)
 	}
 
-	t.Run("http_publish_and_global_timeline", func(t *testing.T) {
+	t.Run("explicit_service_timestamp", func(t *testing.T) {
+		v := newVideo()
+		supplied := time.Date(2025, 1, 2, 3, 4, 5, 123987654, cfg.Loc)
+		v.CreateTime = supplied
+		must(t, svc.Publish(ctx, v))
+		var stored video.Video
+		var event video.OutboxMsg
+		must(t, db.First(&stored, v.ID).Error)
+		must(t, db.Where("video_id = ?", v.ID).Take(&event).Error)
+		want := supplied.Truncate(time.Millisecond)
+		if !v.CreateTime.Equal(want) || !stored.CreateTime.Equal(want) || !event.CreateTime.Equal(want) {
+			t.Fatalf("explicit time: response=%v video=%v outbox=%v, want %v", v.CreateTime, stored.CreateTime, event.CreateTime, want)
+		}
+	})
+
+	var published video.Video
+	if !t.Run("http_publish_after_author_lock", func(t *testing.T) {
+		// A distinct high threshold proves the router passes config to Publish.
+		router := apphttp.SetRouter(db, nil, nil, config.FollowingFeedConfig{LowThreshold: 7, InitialThreshold: 8, HighThreshold: 9})
+		token, err := auth.GenerateToken(1, "author")
+		must(t, err)
+		must(t, db.Model(&account.Account{}).Where("id = ?", 1).Update("token", token).Error)
+		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		lock := db.WithContext(waitCtx).Begin()
+		must(t, lock.Error)
+		defer lock.Rollback()
+		must(t, lock.Exec("SELECT id FROM accounts WHERE id = 1 FOR UPDATE").Error)
+
+		req := httptest.NewRequest("POST", "/video/publish", strings.NewReader(`{"title":"HTTP publication","play_url":"/play","cover_url":"/cover","create_time":"2001-01-01T00:00:00Z"}`)).WithContext(waitCtx)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		res := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			router.ServeHTTP(res, req)
+		}()
+		defer func() {
+			_ = lock.Rollback().Error
+			<-done
+		}()
+
+		// Wait for MySQL to report the request queued on the account row.
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			var waiting int
+			must(t, admin.QueryRowContext(waitCtx, `SELECT EXISTS (
+				SELECT 1 FROM performance_schema.data_locks
+				WHERE OBJECT_SCHEMA = ? AND OBJECT_NAME = 'accounts'
+				  AND INDEX_NAME = 'PRIMARY' AND LOCK_STATUS = 'WAITING'
+			)`, schema).Scan(&waiting))
+			if waiting == 1 {
+				break
+			}
+			select {
+			case <-done:
+				t.Fatalf("publish completed before lock release: %d %s", res.Code, res.Body.String())
+			case <-waitCtx.Done():
+				t.Fatal("publish did not reach the author row lock", waitCtx.Err())
+			case <-tick.C:
+			}
+		}
+		// Separate the observed wait from release even at millisecond precision.
+		boundary := time.Now().Truncate(time.Millisecond).Add(time.Millisecond)
+		timer := time.NewTimer(time.Until(boundary))
+		defer timer.Stop()
+		<-timer.C
+		must(t, lock.Commit().Error)
+		<-done
+		if res.Code != 200 || strings.Contains(res.Body.String(), "distribution_mode") {
+			t.Fatalf("publish returned %d: %s", res.Code, res.Body.String())
+		}
+		must(t, json.Unmarshal(res.Body.Bytes(), &published))
+		var stored video.Video
+		var event video.OutboxMsg
+		must(t, db.First(&stored, published.ID).Error)
+		must(t, db.Where("video_id = ?", published.ID).Take(&event).Error)
+		if published.CreateTime.Before(boundary) || published.CreateTime.After(time.Now()) ||
+			!published.CreateTime.Equal(published.CreateTime.Truncate(time.Millisecond)) ||
+			!published.CreateTime.Equal(stored.CreateTime) || !published.CreateTime.Equal(event.CreateTime) {
+			t.Fatalf("publish times: boundary=%v response=%v video=%v outbox=%v", boundary, published.CreateTime, stored.CreateTime, event.CreateTime)
+		}
+		if stored.DistributionMode == nil || *stored.DistributionMode != video.DistributionPull ||
+			event.DistributionMode == nil || *event.DistributionMode != video.DistributionPull {
+			t.Fatalf("HTTP publish did not snapshot the mode from router thresholds: %+v %+v", stored, event)
+		}
+	}) {
+		return
+	}
+
+	t.Run("global_timeline", func(t *testing.T) {
 		amqpURL, redisAddr := os.Getenv("FOLLOWING_TEST_AMQP_URL"), os.Getenv("C_TEST_REDIS_ADDR")
 		if amqpURL == "" || redisAddr == "" {
 			t.Skip("set isolated FOLLOWING_TEST_AMQP_URL and C_TEST_REDIS_ADDR for timeline regression")
@@ -222,32 +319,16 @@ func TestPublishFollowingMySQL(t *testing.T) {
 		worker.StartConsumer(timeline, "video.timeline.update.queue", cache, mq)
 		worker.StartOutboxPoller(db, timeline)
 
-		// A distinct high threshold proves the router passes config to Publish.
-		router := apphttp.SetRouter(db, cache, nil, config.FollowingFeedConfig{LowThreshold: 7, InitialThreshold: 8, HighThreshold: 9})
-		token, err := auth.GenerateToken(1, "author")
-		must(t, err)
-		must(t, db.Model(&account.Account{}).Where("id = ?", 1).Update("token", token).Error)
-		req := httptest.NewRequest("POST", "/video/publish", strings.NewReader(`{"title":"HTTP publication","play_url":"/play","cover_url":"/cover"}`))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+token)
-		res := httptest.NewRecorder()
-		router.ServeHTTP(res, req)
-		if res.Code != 200 || strings.Contains(res.Body.String(), "distribution_mode") {
-			t.Fatalf("publish returned %d: %s", res.Code, res.Body.String())
-		}
-		var published video.Video
-		must(t, json.Unmarshal(res.Body.Bytes(), &published))
-		var stored video.Video
-		must(t, db.First(&stored, published.ID).Error)
-		if stored.DistributionMode == nil || *stored.DistributionMode != video.DistributionPull {
-			t.Fatalf("HTTP publish did not apply router thresholds: %+v", stored)
-		}
+		router := apphttp.SetRouter(db, cache, nil)
 		key := cache.Key("feed:global_timeline")
 		for _, id := range []uint{oldVideo.ID, published.ID} {
 			deadline := time.Now().Add(5 * time.Second)
 			for {
-				_, err = raw.ZScore(ctx, key, strconv.FormatUint(uint64(id), 10)).Result()
+				score, err := raw.ZScore(ctx, key, strconv.FormatUint(uint64(id), 10)).Result()
 				if err == nil {
+					if id == published.ID && score != float64(published.CreateTime.UnixMilli()) {
+						t.Fatalf("timeline score = %.0f, want %d", score, published.CreateTime.UnixMilli())
+					}
 					break
 				}
 				if err != redis.Nil || time.Now().After(deadline) {
@@ -256,7 +337,7 @@ func TestPublishFollowingMySQL(t *testing.T) {
 				time.Sleep(20 * time.Millisecond)
 			}
 		}
-		res = httptest.NewRecorder()
+		res := httptest.NewRecorder()
 		router.ServeHTTP(res, httptest.NewRequest("POST", "/feed/listLatest", strings.NewReader(`{"limit":10}`)))
 		if res.Code != 200 || !strings.Contains(res.Body.String(), "HTTP publication") {
 			t.Fatalf("global feed returned %d: %s", res.Code, res.Body.String())
