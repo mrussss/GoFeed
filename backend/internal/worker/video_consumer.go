@@ -19,19 +19,21 @@ import (
 
 var errInvalidVideoEvent = errors.New("invalid video event")
 
+type quarantineVideoDelivery func(context.Context, amqp.Delivery, string, error) error
+
 func RunGlobalTimelineConsumer(ctx context.Context, cfg config.RabbitMQConfig, cache *rediscache.Client) {
 	runVideoConsumer(ctx, cfg, rabbitmq.GlobalTimelineQueue, func(ctx context.Context, event rabbitmq.TimelineEvent) error {
 		keys := []string{cache.Key("feed:global_timeline")}
 		member := oredis.Z{Score: float64(event.CreateTime), Member: strconv.FormatUint(uint64(event.VideoID), 10)}
 		return cache.AddBoundedZSets(ctx, keys, member, 1000)
-	})
+	}, nil)
 }
 
 // One independent connection per queue isolates consumer errors and lets each
 // loop recreate its channel after a Redis error or broker disconnect.
-func runVideoConsumer(ctx context.Context, cfg config.RabbitMQConfig, queue string, handle func(context.Context, rabbitmq.TimelineEvent) error) {
+func runVideoConsumer(ctx context.Context, cfg config.RabbitMQConfig, queue string, handle func(context.Context, rabbitmq.TimelineEvent) error, quarantine quarantineVideoDelivery) {
 	for ctx.Err() == nil {
-		err := consumeVideoEvents(ctx, cfg, queue, handle)
+		err := consumeVideoEvents(ctx, cfg, queue, handle, quarantine)
 		if ctx.Err() == nil {
 			log.Printf("video consumer %s: %v; retry in 1s", queue, err)
 		}
@@ -41,7 +43,7 @@ func runVideoConsumer(ctx context.Context, cfg config.RabbitMQConfig, queue stri
 	}
 }
 
-func consumeVideoEvents(ctx context.Context, cfg config.RabbitMQConfig, queue string, handle func(context.Context, rabbitmq.TimelineEvent) error) error {
+func consumeVideoEvents(ctx context.Context, cfg config.RabbitMQConfig, queue string, handle func(context.Context, rabbitmq.TimelineEvent) error, quarantine quarantineVideoDelivery) error {
 	conn, err := amqp.DialConfig(rabbitmq.ConnectionURL(cfg), amqp.Config{Dial: amqp.DefaultDial(3 * time.Second)})
 	if err != nil {
 		return err
@@ -70,14 +72,30 @@ func consumeVideoEvents(ctx context.Context, cfg config.RabbitMQConfig, queue st
 				return errors.New("delivery channel closed")
 			}
 			var event rabbitmq.TimelineEvent
-			err := json.Unmarshal(delivery.Body, &event)
-			if err == nil && event.VideoID > 0 {
-				err = handle(ctx, event)
+			var err error
+			if quarantine != nil {
+				event, err = decodeFollowingEvent(delivery.Body)
 			} else {
-				err = fmt.Errorf("%w: invalid JSON or missing video ID", errInvalidVideoEvent)
+				err = json.Unmarshal(delivery.Body, &event)
+				if err != nil || event.VideoID == 0 {
+					err = fmt.Errorf("%w: invalid JSON or missing video ID", errInvalidVideoEvent)
+				}
+			}
+			if err == nil {
+				err = handle(ctx, event)
+			}
+			if quarantine != nil {
+				if class := followingFailureClass(err); class != "" {
+					if publishErr := quarantine(ctx, delivery, class, err); publishErr != nil {
+						return fmt.Errorf("quarantine message %q (%s): %w", delivery.MessageId, class, publishErr)
+					}
+					log.Printf("video consumer %s: quarantined message %q (%s): %v", queue, delivery.MessageId, class, err)
+					// Only a confirmed transfer may settle the original delivery.
+					err = nil
+				}
 			}
 			switch {
-			case errors.Is(err, errInvalidVideoEvent):
+			case quarantine == nil && errors.Is(err, errInvalidVideoEvent):
 				log.Printf("video consumer %s: reject message %q: %v", queue, delivery.MessageId, err)
 				if err := delivery.Reject(false); err != nil {
 					return err

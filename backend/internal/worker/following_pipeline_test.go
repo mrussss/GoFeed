@@ -1,6 +1,7 @@
 package worker_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -85,6 +86,10 @@ func TestFollowingPipeline(t *testing.T) {
 	}
 	// Start with the legacy queue only; the first publisher must declare fanout.
 	_, err = ch.QueueDelete(rabbitmq.FollowingFanoutQueue, true, true, false)
+	mustFollowing(t, err)
+	_, err = ch.QueueDeclare(rabbitmq.FollowingQuarantineQueue, true, false, false, false, nil)
+	mustFollowing(t, err)
+	_, err = ch.QueuePurge(rabbitmq.FollowingQuarantineQueue, false)
 	mustFollowing(t, err)
 
 	raw := redis.NewClient(&redis.Options{Addr: redisAddr, DB: 15})
@@ -240,9 +245,45 @@ func TestFollowingPipeline(t *testing.T) {
 		publish(t, e)
 		waitKey(t, cache.Key("feed:author_outbox:%d", id), member(t, e), 0)
 	}
+	publishMalformed := func(t *testing.T, id string, body []byte) {
+		t.Helper()
+		mustFollowing(t, ch.PublishWithContext(ctx, "", rabbitmq.FollowingFanoutQueue, true, false,
+			amqp.Publishing{MessageId: id, DeliveryMode: amqp.Persistent, Body: body}))
+	}
+	readQuarantine := func(t *testing.T, id, class string, originalBody []byte) amqp.Delivery {
+		t.Helper()
+		var delivery amqp.Delivery
+		awaitFollowing(t, func() bool {
+			next, ok, err := ch.Get(rabbitmq.FollowingQuarantineQueue, true)
+			mustFollowing(t, err)
+			delivery = next
+			return ok
+		}, "quarantine delivery "+id)
+		var data rabbitmq.FollowingQuarantineMessage
+		mustFollowing(t, json.Unmarshal(delivery.Body, &data))
+		if delivery.DeliveryMode != amqp.Persistent || delivery.MessageId == "" ||
+			(id != "" && delivery.MessageId != id) || data.OriginalMessageID != id ||
+			data.ErrorClass != class || data.SourceQueue != rabbitmq.FollowingFanoutQueue ||
+			data.Reason == "" || data.QuarantinedAt.IsZero() || !bytes.Equal(data.OriginalBody, originalBody) {
+			t.Fatalf("wrong quarantine message %q: %+v", delivery.MessageId, data)
+		}
+		return delivery
+	}
+	assertQueueEmpty := func(t *testing.T, queue string) {
+		t.Helper()
+		info, err := ch.QueueInspect(queue)
+		mustFollowing(t, err)
+		if info.Messages != 0 {
+			t.Fatalf("%s still has %d ready messages", queue, info.Messages)
+		}
+	}
 
 	lostAck := event(9000, 99, video.DistributionPull)
-	probe := &followingPipelineProbe{member: member(t, lostAck), written: make(chan struct{}), resume: make(chan struct{})}
+	probe := &followingPipelineProbe{
+		member: member(t, lostAck), written: make(chan struct{}), resume: make(chan struct{}),
+		repairMember:  member(t, event(400, 20, video.DistributionPush)),
+		repairWritten: make(chan struct{}), repairResume: make(chan struct{}),
+	}
 	// The first fanout Redis connection is deliberately unavailable. Redis and
 	// the global consumer remain available to this test through their own client.
 	var offline atomic.Bool
@@ -260,6 +301,31 @@ func TestFollowingPipeline(t *testing.T) {
 	fanoutRaw.AddHook(probe)
 	defer fanoutRaw.Close()
 	fanoutCache := rediscache.NewClient(fanoutRaw, schema+":")
+	quarantine := rabbitmq.NewFollowingQuarantineMQ(mqCfg)
+	defer quarantine.Close()
+	const lostQuarantineAckID = "quarantine-lost-ack"
+	const unavailableQuarantineID = "quarantine-unavailable"
+	var interrupted, returned, recovered atomic.Bool
+	transfer := func(ctx context.Context, delivery amqp.Delivery, class string, cause error) error {
+		err := quarantine.Publish(ctx, delivery, class, cause)
+		if delivery.MessageId == unavailableQuarantineID {
+			var failure *rabbitmq.PublishError
+			if errors.As(err, &failure) && failure.Code == "unroutable" {
+				returned.Store(true)
+			}
+			if err == nil && delivery.Redelivered {
+				recovered.Store(true)
+			}
+		}
+		if err == nil && delivery.MessageId == lostQuarantineAckID && interrupted.CompareAndSwap(false, true) {
+			// The destination already confirmed. Closing the live source
+			// channel here makes the next production ACK fail.
+			if err := delivery.Acknowledger.(*amqp.Channel).Close(); err != nil {
+				return err
+			}
+		}
+		return err
+	}
 	workerCtx, stop := context.WithCancel(ctx)
 	globalDone, fanoutDone := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -268,7 +334,7 @@ func TestFollowingPipeline(t *testing.T) {
 	}()
 	go func() {
 		defer close(fanoutDone)
-		worker.RunFollowingFanoutConsumer(workerCtx, mqCfg, social.NewSocialRepository(db), fanoutCache, fanoutCfg)
+		worker.RunFollowingFanoutWithQuarantineForTest(workerCtx, mqCfg, social.NewSocialRepository(db), fanoutCache, fanoutCfg, transfer)
 	}()
 	defer func() { stop(); <-fanoutDone; <-globalDone }()
 
@@ -278,11 +344,14 @@ func TestFollowingPipeline(t *testing.T) {
 		publish(t, e)
 		waitGlobal(t, e)
 		awaitFollowing(t, func() bool { return probe.failures.Load() > 0 }, "failed fanout Redis pipeline")
+		assertQueueEmpty(t, rabbitmq.FollowingQuarantineQueue)
 		if raw.Exists(ctx, key).Val() != 0 {
 			t.Fatal("fanout wrote while its Redis connection was unavailable")
 		}
 		offline.Store(false)
 		waitKey(t, key, member(t, e), 0)
+		fence(t, 101)
+		assertQueueEmpty(t, rabbitmq.FollowingQuarantineQueue)
 	}) {
 		return
 	}
@@ -336,13 +405,51 @@ func TestFollowingPipeline(t *testing.T) {
 		publish(t, e)
 		waitGlobal(t, e)
 		waitKey(t, keys[0], member(t, e), 0)
-		awaitFollowing(t, func() bool { return probe.failures.Load() >= 2 }, "Redis wrong-type pipeline result")
+		select {
+		case <-probe.repairWritten:
+		case <-ctx.Done():
+			t.Fatal("first WRONGTYPE pipeline did not finish")
+		}
 		mustFollowing(t, raw.Del(ctx, keys[100]).Err())
+		close(probe.repairResume)
 		waitKey(t, keys[100], member(t, e), 0)
 		fence(t, 401)
 		if n := raw.ZCard(ctx, keys[0]).Val(); n != 1 {
 			t.Fatalf("partial replay created %d members", n)
 		}
+		assertQueueEmpty(t, rabbitmq.FollowingQuarantineQueue)
+	})
+
+	t.Run("persistent_wrongtype_releases_B_C_D", func(t *testing.T) {
+		aKeys := author(t, 21, 3)
+		bKey := author(t, 22, 1)[0]
+		dKey := author(t, 24, 1)[0]
+		mustFollowing(t, raw.Set(ctx, aKeys[1], "wrong type", 0).Err())
+		a := event(410, 21, video.DistributionPush)
+		b := event(411, 22, video.DistributionPush)
+		c := event(412, 23, video.DistributionPull)
+		d := event(413, 24, video.DistributionPush)
+		before := probe.failures.Load()
+		for _, e := range []rabbitmq.TimelineEvent{a, b, c, d} {
+			publish(t, e)
+		}
+		body, err := json.Marshal(a)
+		mustFollowing(t, err)
+		readQuarantine(t, a.EventID, "redis_wrongtype", body)
+		fence(t, 414)
+		if attempts := probe.failures.Load() - before; attempts != 2 {
+			t.Fatalf("A failed %d times, want original attempt plus one retry", attempts)
+		}
+		for key, e := range map[string]rabbitmq.TimelineEvent{
+			aKeys[0]: a, aKeys[2]: a, bKey: b, cache.Key("feed:author_outbox:23"): c, dKey: d,
+		} {
+			got, err := raw.ZRange(ctx, key, 0, -1).Result()
+			mustFollowing(t, err)
+			if !slices.Equal(got, []string{member(t, e)}) {
+				t.Fatalf("%s candidates %v, want exactly one from %s", key, got, e.EventID)
+			}
+		}
+		assertQueueEmpty(t, rabbitmq.FollowingQuarantineQueue)
 	})
 
 	t.Run("bounded_lex_indexes_and_pull_isolation", func(t *testing.T) {
@@ -391,12 +498,58 @@ func TestFollowingPipeline(t *testing.T) {
 		bad := event(901, 40, video.DistributionPush)
 		bad.DistributionMode = ""
 		publish(t, bad)
+		body, err := json.Marshal(bad)
+		mustFollowing(t, err)
+		readQuarantine(t, bad.EventID, "invalid_event", body)
 		fence(t, 902)
 		waitGlobal(t, legacy)
 		waitGlobal(t, bad)
 		if raw.Exists(ctx, key, cache.Key("feed:author_outbox:0"), cache.Key("feed:author_outbox:40")).Val() != 0 {
 			t.Fatal("legacy or invalid event wrote following candidates")
 		}
+	})
+
+	t.Run("malformed_payload_and_stable_missing_id", func(t *testing.T) {
+		body := []byte{'{', 0xff, 0, '}'}
+		publishMalformed(t, "malformed-fanout", body)
+		readQuarantine(t, "malformed-fanout", "invalid_event", body)
+		var firstID string
+		for range 2 {
+			publishMalformed(t, "", body)
+			delivery := readQuarantine(t, "", "invalid_event", body)
+			if firstID != "" && delivery.MessageId != firstID {
+				t.Fatalf("missing MessageId fallback changed from %q to %q", firstID, delivery.MessageId)
+			}
+			firstID = delivery.MessageId
+		}
+		fence(t, 904)
+		assertQueueEmpty(t, rabbitmq.FollowingFanoutQueue)
+	})
+
+	t.Run("quarantine_return_preserves_original_delivery", func(t *testing.T) {
+		// Remove the destination while its confirmed publisher is connected.
+		_, err := ch.QueueDelete(rabbitmq.FollowingQuarantineQueue, true, true, false)
+		mustFollowing(t, err)
+		body := []byte("{")
+		publishMalformed(t, unavailableQuarantineID, body)
+		awaitFollowing(t, returned.Load, "mandatory Return from deleted quarantine queue")
+		awaitFollowing(t, recovered.Load, "original redelivery after quarantine queue was re-declared")
+		readQuarantine(t, unavailableQuarantineID, "invalid_event", body)
+		fence(t, 905)
+		assertQueueEmpty(t, rabbitmq.FollowingFanoutQueue)
+	})
+
+	t.Run("quarantine_confirm_then_original_ack_lost", func(t *testing.T) {
+		body := []byte("[")
+		publishMalformed(t, lostQuarantineAckID, body)
+		first := readQuarantine(t, lostQuarantineAckID, "invalid_event", body)
+		second := readQuarantine(t, lostQuarantineAckID, "invalid_event", body)
+		if !interrupted.Load() || first.MessageId != second.MessageId {
+			t.Fatal("lost ACK did not preserve the quarantine identity")
+		}
+		fence(t, 906)
+		assertQueueEmpty(t, rabbitmq.FollowingFanoutQueue)
+		assertQueueEmpty(t, rabbitmq.FollowingQuarantineQueue)
 	})
 
 	t.Run("disconnect_after_redis_before_ack", func(t *testing.T) {
@@ -482,9 +635,12 @@ func awaitFollowing(t *testing.T, ready func() bool, what string) {
 }
 
 type followingPipelineProbe struct {
-	member              string
-	written, resume     chan struct{}
-	successes, failures atomic.Int32
+	member                      string
+	written, resume             chan struct{}
+	successes, failures         atomic.Int32
+	repairMember                string
+	repairWritten, repairResume chan struct{}
+	repairObserved              atomic.Bool
 }
 
 func (*followingPipelineProbe) DialHook(next redis.DialHook) redis.DialHook          { return next }
@@ -495,6 +651,14 @@ func (p *followingPipelineProbe) ProcessPipelineHook(next redis.ProcessPipelineH
 		err := next(ctx, cmds)
 		if err != nil {
 			p.failures.Add(1)
+			if redis.HasErrorPrefix(err, "WRONGTYPE ") && len(cmds) > 0 && cmds[0].Name() == "zadd" &&
+				cmds[0].Args()[3] == p.repairMember && p.repairObserved.CompareAndSwap(false, true) {
+				close(p.repairWritten)
+				select {
+				case <-p.repairResume:
+				case <-ctx.Done():
+				}
+			}
 			return err
 		}
 		if len(cmds) == 2 && cmds[0].Name() == "zadd" && cmds[0].Args()[3] == p.member && p.successes.Add(1) == 1 {
