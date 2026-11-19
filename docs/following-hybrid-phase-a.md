@@ -45,7 +45,7 @@ EXPLAIN ANALYZE SELECT COUNT(*) FROM socials WHERE vlogger_id = 155;
 | 117 | 3.046 ms（2.599–6.038） | 1.278 ms（1.106–1.435） |
 | 1 | 9.182 ms（6.158–10.377） | 1.367 ms（1.050–1.501） |
 
-回填后观测到 `PTTL` 为 59,999–60,000 ms。采样范围是 Go Service 调用，MySQL 缓冲池保持运行时状态。未测 HTTP 端到端延迟、并发吞吐、冷 MySQL 缓冲池和多策略对照。正式压测留到 Phase E。
+回填后观测到 `PTTL` 为 59,999–60,000 ms。采样范围是 Go Service 调用，MySQL 缓冲池保持运行时状态。本次采样未覆盖 HTTP 端到端延迟、并发吞吐、冷 MySQL 缓冲池和多策略对照。发布侧的 Push / Pull 成本对照见 [Phase B](following-hybrid-phase-b.md)。
 
 ## 发布事务和兼容性
 
