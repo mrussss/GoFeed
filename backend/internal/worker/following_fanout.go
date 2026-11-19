@@ -1,0 +1,71 @@
+package worker
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"feedsystem_video_go/internal/config"
+	"feedsystem_video_go/internal/feed"
+	"feedsystem_video_go/internal/middleware/rabbitmq"
+	rediscache "feedsystem_video_go/internal/middleware/redis"
+	"feedsystem_video_go/internal/social"
+	"feedsystem_video_go/internal/video"
+
+	oredis "github.com/redis/go-redis/v9"
+)
+
+func RunFollowingFanoutConsumer(ctx context.Context, mq config.RabbitMQConfig, followers *social.SocialRepository, cache *rediscache.Client, cfg config.FollowingFanoutConfig) {
+	runVideoConsumer(ctx, mq, rabbitmq.FollowingFanoutQueue, func(ctx context.Context, event rabbitmq.TimelineEvent) error {
+		return writeFollowingCandidates(ctx, followers, cache, cfg, event)
+	})
+}
+
+func writeFollowingCandidates(ctx context.Context, followers *social.SocialRepository, cache *rediscache.Client, cfg config.FollowingFanoutConfig, event rabbitmq.TimelineEvent) error {
+	if event.Legacy && event.AuthorID == 0 && event.DistributionMode == "" {
+		return nil
+	}
+	if event.Legacy || event.EventID == "" || event.AuthorID == 0 {
+		return fmt.Errorf("%w: incomplete distribution snapshot", errInvalidVideoEvent)
+	}
+	encoded, err := feed.FollowingMember(event.CreateTime, event.VideoID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errInvalidVideoEvent, err)
+	}
+	member := oredis.Z{Member: encoded, Score: 0}
+	switch video.DistributionMode(event.DistributionMode) {
+	case video.DistributionPush:
+		return pushFollowingCandidates(ctx, followers, cache, cfg, event.AuthorID, member)
+	case video.DistributionPull:
+		key := cache.Key("feed:author_outbox:%d", event.AuthorID)
+		writeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		return cache.AddBoundedZSets(writeCtx, []string{key}, member, cfg.AuthorOutboxMaxLen)
+	default:
+		return fmt.Errorf("%w: invalid distribution mode %q", errInvalidVideoEvent, event.DistributionMode)
+	}
+}
+
+func pushFollowingCandidates(ctx context.Context, followers *social.SocialRepository, cache *rediscache.Client, cfg config.FollowingFanoutConfig, authorID uint, member oredis.Z) error {
+	var afterID uint
+	for {
+		readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		links, err := followers.ListFollowerLinks(readCtx, authorID, afterID, cfg.BatchSize)
+		cancel()
+		if err != nil || len(links) == 0 {
+			return err
+		}
+
+		keys := make([]string, len(links))
+		for i, link := range links {
+			keys[i] = cache.Key("feed:inbox:%d", link.FollowerID)
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		err = cache.AddBoundedZSets(writeCtx, keys, member, cfg.InboxMaxLen)
+		cancel()
+		if err != nil || len(links) < cfg.BatchSize {
+			return err
+		}
+		afterID = links[len(links)-1].ID
+	}
+}

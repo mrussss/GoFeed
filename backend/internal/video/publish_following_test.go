@@ -307,17 +307,22 @@ func TestPublishFollowingMySQL(t *testing.T) {
 		if err != nil || !strings.HasPrefix(uri.Vhost, "gofeed-following-test-") {
 			t.Fatal("isolated gofeed-following-test-* vhost required")
 		}
-		mq, err := rabbitmq.NewRabbitMQ(&config.RabbitMQConfig{Host: uri.Host, Port: uri.Port, Username: uri.Username, Password: uri.Password, VHost: uri.Vhost})
-		must(t, err)
-		defer mq.Close()
-		timeline, err := rabbitmq.NewTimelineMQ(mq)
-		must(t, err)
+		mq := config.RabbitMQConfig{Host: uri.Host, Port: uri.Port, Username: uri.Username, Password: uri.Password, VHost: uri.Vhost}
+		timeline := rabbitmq.NewTimelineMQ(mq)
+		defer timeline.Close()
 		raw := redis.NewClient(&redis.Options{Addr: redisAddr, DB: 15})
 		defer raw.Close()
 		cache := rediscache.NewClient(raw, schema+":")
 		defer cache.DelByPattern(context.Background(), schema+":*")
-		worker.StartConsumer(timeline, "video.timeline.update.queue", cache, mq)
-		worker.StartOutboxPoller(db, timeline)
+		workerCtx, stop := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			worker.RunGlobalTimelineConsumer(workerCtx, mq, cache)
+		}()
+		defer func() { stop(); <-done }()
+		_, err = worker.RelayVideoOutboxOnce(ctx, db, timeline)
+		must(t, err)
 
 		router := apphttp.SetRouter(db, cache, nil)
 		key := cache.Key("feed:global_timeline")

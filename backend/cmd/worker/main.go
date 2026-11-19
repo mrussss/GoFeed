@@ -7,11 +7,13 @@ import (
 	mqrabbit "feedsystem_video_go/internal/middleware/rabbitmq"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 	"feedsystem_video_go/internal/observability"
+	"feedsystem_video_go/internal/social"
 	"feedsystem_video_go/internal/video"
 	"feedsystem_video_go/internal/worker"
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -63,20 +65,20 @@ func main() {
 	})
 	defer db.CloseDB(sqlDB)
 
-	// 连接 Redis（用于点赞缓存失效）
-	cache, err := rediscache.NewFromEnv(&cfg.Redis)
+	// Keep the video client available for recovery even if Redis starts down.
+	videoCache, err := rediscache.NewFromEnv(&cfg.Redis)
+	cache := videoCache
 	if err != nil {
 		log.Printf("Redis config error (like cache invalidation disabled): %v", err)
 		cache = nil
 	} else {
+		defer videoCache.Close()
 		pingCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
 		if err := cache.Ping(pingCtx); err != nil {
 			log.Printf("Redis not available (like cache invalidation disabled): %v", err)
-			_ = cache.Close()
 			cache = nil
 		} else {
-			defer cache.Close()
 			log.Printf("Redis connected (like cache invalidation enabled)")
 		}
 	}
@@ -97,6 +99,24 @@ func main() {
 		_ = worker.RunLikeCommandConsumers(ctx, cfg.RabbitMQ, likeRepo, cache)
 	}()
 	defer func() { stop(); <-commandsDone; <-commandsDone }()
+
+	timelineMQ := mqrabbit.NewTimelineMQ(cfg.RabbitMQ)
+	defer timelineMQ.Close()
+	var videoWorkers sync.WaitGroup
+	for _, run := range []func(){
+		func() { worker.RelayVideoOutbox(ctx, sqlDB, timelineMQ) },
+		func() { worker.RunGlobalTimelineConsumer(ctx, cfg.RabbitMQ, videoCache) },
+		func() {
+			worker.RunFollowingFanoutConsumer(ctx, cfg.RabbitMQ, social.NewSocialRepository(sqlDB), videoCache, cfg.FollowingFanout)
+		},
+	} {
+		videoWorkers.Add(1)
+		go func() {
+			defer videoWorkers.Done()
+			run()
+		}()
+	}
+	defer func() { stop(); videoWorkers.Wait() }()
 
 	pprofServer, err := observability.NewPprofServer(
 		"Worker",

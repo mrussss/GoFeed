@@ -2,118 +2,83 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
-	"feedsystem_video_go/internal/middleware/rabbitmq"
-	rediscache "feedsystem_video_go/internal/middleware/redis"
-	"feedsystem_video_go/internal/video"
 	"fmt"
 	"log"
 	"time"
 
-	oredis "github.com/redis/go-redis/v9"
+	"feedsystem_video_go/internal/middleware/rabbitmq"
+	"feedsystem_video_go/internal/video"
+
 	"gorm.io/gorm"
 )
 
-func StartOutboxPoller(db *gorm.DB, tmq *rabbitmq.TimelineMQ) {
-	if db == nil || tmq == nil {
-		log.Printf("Outbox poller disabled: timeline mq is not initialized")
-		return
-	}
+const videoOutboxBatchSize = 100
 
-	go func() {
-		for {
-			var messages []video.OutboxMsg
-
-			err := db.Where("status = ?", "pending").Order("create_time ASC").Limit(100).Find(&messages).Error
-
-			if err != nil || len(messages) == 0 {
-				time.Sleep(1 * time.Second)
-				continue
-			}
-
-			for _, msg := range messages {
-				err := tmq.PublishVideo(context.Background(), msg.VideoID, msg.CreateTime)
-
-				if err == nil {
-					if err := db.Delete(&msg).Error; err != nil {
-						log.Printf("删除 outbox 消息失败: id=%d, err=%v", msg.ID, err)
-					}
-				} else {
-					log.Printf("投递MQ失败: VideoID: %d, err: %v", msg.VideoID, err)
-				}
-			}
+// RelayVideoOutbox polls the oldest visible pending IDs on every pass. A single
+// Worker owns the Relay and each successful Confirm gets a conditional mark.
+func RelayVideoOutbox(ctx context.Context, db *gorm.DB, mq *rabbitmq.TimelineMQ) {
+	for ctx.Err() == nil {
+		iteration, cancel := context.WithTimeout(ctx, 5*time.Second)
+		count, err := RelayVideoOutboxOnce(iteration, db, mq)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			log.Printf("video outbox relay: %v", err)
 		}
-	}()
+		if err == nil && count == videoOutboxBatchSize {
+			continue
+		}
+		if !waitVideoRetry(ctx) {
+			return
+		}
+	}
 }
 
-func StartConsumer(tmq *rabbitmq.TimelineMQ, queueName string, redisClient *rediscache.Client, rmq *rabbitmq.RabbitMQ) {
-	if tmq == nil || rmq == nil || rmq.Conn == nil {
-		log.Printf("Timeline consumer disabled: rabbitmq is not initialized")
-		return
+func RelayVideoOutboxOnce(ctx context.Context, db *gorm.DB, mq *rabbitmq.TimelineMQ) (int, error) {
+	var rows []video.OutboxMsg
+	if err := db.WithContext(ctx).Where("status = ? AND event_type = ?", "pending", "video_published").
+		Order("id ASC").Limit(videoOutboxBatchSize).Find(&rows).Error; err != nil {
+		return 0, err
 	}
-	if redisClient == nil {
-		log.Printf("Timeline consumer disabled: redis is not initialized")
-		return
-	}
-
-	go func() {
-		for {
-			// 每次重连创建独立的 Channel，不与发布者共用
-			ch, err := rmq.NewChannel()
-			if err != nil {
-				log.Printf("Timeline consumer: 创建 Channel 失败: %v, 5秒后重试", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			if err := ch.Qos(10, 0, false); err != nil {
-				log.Printf("Timeline consumer: QoS 设置失败: %v", err)
-			}
-
-			msgs, err := ch.Consume(queueName, "", false, false, false, false, nil)
-			if err != nil {
-				log.Printf("Timeline consumer: 注册消费失败: %v, 5秒后重试", err)
-				ch.Close()
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			log.Printf("Timeline consumer 已启动, queue=%s", queueName)
-
-			for msg := range msgs {
-				var event rabbitmq.TimelineEvent
-				if err := json.Unmarshal(msg.Body, &event); err != nil {
-					log.Printf("Timeline consumer: 反序列化失败: %v", err)
-					msg.Ack(false)
-					continue
-				}
-
-				ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				timelineKey := redisClient.Key("feed:global_timeline")
-				err = redisClient.ZAdd(ctx, timelineKey, oredis.Z{
-					Score:  float64(event.CreateTime),
-					Member: fmt.Sprintf("%d", event.VideoID),
-				})
-
-				if err != nil {
-					log.Printf("Timeline consumer: 写入Zset失败: %v", err)
-					msg.Nack(false, true)
-					cancel()
-					continue
-				}
-
-				if err := redisClient.ZRemRangeByRank(ctx, timelineKey, 0, -1001); err != nil {
-					log.Printf("Timeline consumer: ZRem失败: %v", err)
-				}
-
-				msg.Ack(false)
-				cancel()
-			}
-
-			// msgs channel 关闭说明 AMQP Channel 断开，关闭并重连
-			ch.Close()
-			log.Printf("Timeline consumer: Channel 断开, 5秒后重连...")
-			time.Sleep(5 * time.Second)
+	for i, row := range rows {
+		event, err := timelineEvent(row)
+		status := "published"
+		if err != nil {
+			// An incomplete snapshot cannot be reconstructed from current state.
+			log.Printf("video outbox %d invalid: %v", row.ID, err)
+			status = "invalid"
+		} else if err = mq.Publish(ctx, event); err != nil {
+			return i, fmt.Errorf("publish video outbox %d: %w", row.ID, err)
 		}
-	}()
+		result := db.WithContext(ctx).Model(&video.OutboxMsg{}).
+			Where("id = ? AND status = ?", row.ID, "pending").UpdateColumn("status", status)
+		if result.Error != nil {
+			return i, fmt.Errorf("mark video outbox %d %s: %w", row.ID, status, result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return i, fmt.Errorf("mark video outbox %d %s: changed %d rows", row.ID, status, result.RowsAffected)
+		}
+	}
+	return len(rows), nil
+}
+
+func timelineEvent(row video.OutboxMsg) (rabbitmq.TimelineEvent, error) {
+	event := rabbitmq.TimelineEvent{
+		VideoID: row.VideoID, CreateTime: row.CreateTime.UnixMilli(), OccurredAt: row.CreateTime.UTC(),
+	}
+	if row.VideoID == 0 || row.CreateTime.IsZero() {
+		return event, fmt.Errorf("missing video ID or creation time")
+	}
+	if row.EventID == nil && row.AuthorID == nil && row.DistributionMode == nil {
+		event.EventID = fmt.Sprintf("legacy-outbox-%d", row.ID)
+		event.Legacy = true
+		return event, nil
+	}
+	if row.EventID == nil || *row.EventID == "" || row.AuthorID == nil || *row.AuthorID == 0 ||
+		row.DistributionMode == nil || (*row.DistributionMode != video.DistributionPush && *row.DistributionMode != video.DistributionPull) {
+		return event, fmt.Errorf("incomplete or invalid distribution snapshot")
+	}
+	event.EventID = *row.EventID
+	event.AuthorID = *row.AuthorID
+	event.DistributionMode = string(*row.DistributionMode)
+	return event, nil
 }

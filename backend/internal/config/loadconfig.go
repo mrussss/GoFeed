@@ -10,12 +10,13 @@ import (
 )
 
 type Config struct {
-	Server              ServerConfig        `yaml:"server"`
-	Database            DatabaseConfig      `yaml:"database"`
-	Redis               RedisConfig         `yaml:"redis"`
-	RabbitMQ            RabbitMQConfig      `yaml:"rabbitmq"`
-	FollowingFeed       FollowingFeedConfig `yaml:"following_feed"`
-	ObservabilityConfig ObservabilityConfig `yaml:"observability"`
+	Server              ServerConfig          `yaml:"server"`
+	Database            DatabaseConfig        `yaml:"database"`
+	Redis               RedisConfig           `yaml:"redis"`
+	RabbitMQ            RabbitMQConfig        `yaml:"rabbitmq"`
+	FollowingFeed       FollowingFeedConfig   `yaml:"following_feed"`
+	FollowingFanout     FollowingFanoutConfig `yaml:"following_fanout"`
+	ObservabilityConfig ObservabilityConfig   `yaml:"observability"`
 }
 
 type FollowingFeedConfig struct {
@@ -26,6 +27,16 @@ type FollowingFeedConfig struct {
 
 func DefaultFollowingFeedConfig() FollowingFeedConfig {
 	return FollowingFeedConfig{LowThreshold: 9000, InitialThreshold: 10000, HighThreshold: 11000}
+}
+
+type FollowingFanoutConfig struct {
+	InboxMaxLen        int64 `yaml:"inbox_max_len"`
+	AuthorOutboxMaxLen int64 `yaml:"author_outbox_max_len"`
+	BatchSize          int   `yaml:"batch_size"`
+}
+
+func DefaultFollowingFanoutConfig() FollowingFanoutConfig {
+	return FollowingFanoutConfig{InboxMaxLen: 1000, AuthorOutboxMaxLen: 500, BatchSize: 500}
 }
 
 type ServerConfig struct {
@@ -71,13 +82,16 @@ func Load(filename string) (Config, error) {
 		return Config{}, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	cfg := Config{FollowingFeed: DefaultFollowingFeedConfig()}
+	cfg := Config{FollowingFeed: DefaultFollowingFeedConfig(), FollowingFanout: DefaultFollowingFanoutConfig()}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", filename, err)
 	}
 	thresholds := cfg.FollowingFeed
 	if thresholds.LowThreshold < 0 || thresholds.LowThreshold >= thresholds.InitialThreshold || thresholds.InitialThreshold >= thresholds.HighThreshold {
 		return Config{}, errors.New("following_feed requires 0 <= low_threshold < initial_threshold < high_threshold")
+	}
+	if fanout := cfg.FollowingFanout; fanout.InboxMaxLen <= 0 || fanout.AuthorOutboxMaxLen <= 0 || fanout.BatchSize <= 0 {
+		return Config{}, errors.New("following_fanout requires positive index limits and batch_size")
 	}
 
 	ApplyEnvOverrides(&cfg)
@@ -159,7 +173,8 @@ func LoadLocalDev(filename string) (Config, bool, error) {
 
 func DefaultLocalConfig() Config {
 	cfg := Config{
-		FollowingFeed: DefaultFollowingFeedConfig(),
+		FollowingFeed:   DefaultFollowingFeedConfig(),
+		FollowingFanout: DefaultFollowingFanoutConfig(),
 		Server: ServerConfig{
 			Port: 8080,
 		},

@@ -3,10 +3,35 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
 )
+
+// AddBoundedZSets inserts one member per key and retains the highest ranks.
+// Every pipeline result must be known before a caller acknowledges delivery.
+func (c *Client) AddBoundedZSets(ctx context.Context, keys []string, member redis.Z, maxLen int64) error {
+	if c == nil || c.rdb == nil {
+		return errors.New("redis client not initialized")
+	}
+	if maxLen <= 0 {
+		return errors.New("sorted set limit must be positive")
+	}
+	commands, err := c.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for _, key := range keys {
+			pipe.ZAdd(ctx, key, member)
+			pipe.ZRemRangeByRank(ctx, key, 0, -maxLen-1)
+		}
+		return nil
+	})
+	for i, cmd := range commands {
+		if commandErr := cmd.Err(); commandErr != nil {
+			return fmt.Errorf("%s %s: %w", cmd.Name(), keys[i/2], commandErr)
+		}
+	}
+	return err
+}
 
 func (c *Client) ZincrBy(ctx context.Context, key string, member string, score float64) error {
 	if c == nil || c.rdb == nil {
