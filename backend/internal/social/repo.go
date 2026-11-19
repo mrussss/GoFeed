@@ -105,6 +105,22 @@ func (r *SocialRepository) CountFollowers(ctx context.Context, vloggerID uint) (
 	return count, nil
 }
 
+type FollowerLink struct {
+	ID         uint
+	FollowerID uint
+}
+
+func (r *SocialRepository) ListFollowerLinks(ctx context.Context, authorID, afterID uint, limit int) ([]FollowerLink, error) {
+	var links []FollowerLink
+	// InnoDB appends the primary key to idx_social_vlogger. Use that
+	// ordered range directly to avoid an index merge and filesort.
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT id, follower_id FROM socials FORCE INDEX (idx_social_vlogger)
+		WHERE vlogger_id = ? AND id > ? ORDER BY id LIMIT ?
+	`, authorID, afterID, limit).Scan(&links).Error
+	return links, err
+}
+
 func (r *SocialRepository) CountVloggers(ctx context.Context, followerID uint) (int64, error) {
 	var count int64
 	if err := r.db.WithContext(ctx).Model(&Social{}).Where("follower_id = ?", followerID).Count(&count).Error; err != nil {

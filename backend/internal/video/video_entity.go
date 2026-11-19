@@ -13,6 +13,8 @@ type Video struct {
 	CreateTime  time.Time `gorm:"autoCreateTime;index:idx_videos_create_time,sort:desc;index:idx_videos_popularity_time_id,priority:2,sort:desc" json:"create_time"`
 	LikesCount  int64     `gorm:"column:likes_count;not null;default:0;index:idx_videos_likes_count_id,priority:1,sort:desc" json:"likes_count"`
 	Popularity  int64     `gorm:"column:popularity;not null;default:0;index:idx_videos_popularity_time_id,priority:1,sort:desc" json:"popularity"`
+
+	DistributionMode *DistributionMode `gorm:"type:enum('push','pull');<-:create" json:"-"`
 }
 
 type PublishVideoRequest struct {
@@ -40,4 +42,8 @@ type OutboxMsg struct {
 	EventType  string    `gorm:"type:varchar(50)"`
 	CreateTime time.Time `gorm:"autoCreateTime"`
 	Status     string    `gorm:"type:varchar(50);index"`
+
+	EventID          *string           `gorm:"type:char(32);uniqueIndex;<-:create"`
+	AuthorID         *uint             `gorm:"<-:create"`
+	DistributionMode *DistributionMode `gorm:"type:enum('push','pull');<-:create"`
 }
