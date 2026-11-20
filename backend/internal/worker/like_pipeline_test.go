@@ -340,7 +340,7 @@ func TestLikeCommandPipeline(t *testing.T) {
 	}
 	// A cached following page may retain counts until TTL, but not an obsolete
 	// per-account is_liked value.
-	followingKey := cache.Key("feed:listByFollowing:limit=10:accountID=%d:before=0", accountID)
+	followingKey := cache.Key("feed:listByFollowing:limit=10:accountID=%d:before=0:id=0", accountID)
 	if err := raw.Set(ctx, followingKey, `{"video_list":[{"id":10,"is_liked":true,"likes_count":1}],"has_more":false}`, time.Minute).Err(); err != nil {
 		t.Fatal(err)
 	}

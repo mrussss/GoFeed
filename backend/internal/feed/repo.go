@@ -17,13 +17,11 @@ func NewFeedRepository(db *gorm.DB) *FeedRepository {
 	return &FeedRepository{db: db}
 }
 
-func (repo *FeedRepository) ListLatest(ctx context.Context, limit int, latestBefore time.Time) ([]*video.Video, error) {
+func (repo *FeedRepository) ListLatest(ctx context.Context, limit int, cursor *TimeCursor) ([]*video.Video, error) {
 	var videos []*video.Video
 	query := repo.db.WithContext(ctx).Model(&video.Video{}).
-		Order("create_time DESC")
-	if !latestBefore.IsZero() {
-		query = query.Where("create_time < ?", latestBefore)
-	}
+		Order("create_time DESC, id DESC")
+	query = applyTimeCursor(query, cursor)
 	if err := query.Limit(limit).Find(&videos).Error; err != nil {
 		return nil, err
 	}
@@ -49,10 +47,10 @@ func (repo *FeedRepository) ListLikesCountWithCursor(ctx context.Context, limit 
 	return videos, nil
 }
 
-func (repo *FeedRepository) ListByFollowing(ctx context.Context, limit int, viewerAccountID uint, latestBefore time.Time) ([]*video.Video, error) {
+func (repo *FeedRepository) ListByFollowing(ctx context.Context, limit int, viewerAccountID uint, cursor *TimeCursor) ([]*video.Video, error) {
 	var videos []*video.Video
 	query := repo.db.WithContext(ctx).Model(&video.Video{}).
-		Order("create_time DESC")
+		Order("create_time DESC, id DESC")
 	if viewerAccountID > 0 {
 		followingSubQuery := repo.db.WithContext(ctx).
 			Model(&social.Social{}).
@@ -60,13 +58,18 @@ func (repo *FeedRepository) ListByFollowing(ctx context.Context, limit int, view
 			Where("follower_id = ?", viewerAccountID)
 		query = query.Where("author_id IN (?)", followingSubQuery)
 	}
-	if !latestBefore.IsZero() {
-		query = query.Where("create_time < ?", latestBefore)
-	}
+	query = applyTimeCursor(query, cursor)
 	if err := query.Limit(limit).Find(&videos).Error; err != nil {
 		return nil, err
 	}
 	return videos, nil
+}
+
+func applyTimeCursor(query *gorm.DB, cursor *TimeCursor) *gorm.DB {
+	if cursor == nil {
+		return query
+	}
+	return query.Where("(create_time < ?) OR (create_time = ? AND id < ?)", cursor.Time, cursor.Time, cursor.ID)
 }
 
 func (repo *FeedRepository) ListByPopularity(ctx context.Context, limit int, popularityBefore int64, timeBefore time.Time, idBefore uint) ([]*video.Video, error) {

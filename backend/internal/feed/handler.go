@@ -1,6 +1,7 @@
 package feed
 
 import (
+	"errors"
 	"feedsystem_video_go/internal/apierror"
 	"feedsystem_video_go/internal/middleware/jwt"
 	"time"
@@ -25,15 +26,16 @@ func (f *FeedHandler) ListLatest(c *gin.Context) {
 	if req.Limit <= 0 || req.Limit > 50 {
 		req.Limit = 10
 	}
-	var latestTime time.Time
-	if req.LatestTime > 0 {
-		latestTime = time.UnixMilli(req.LatestTime)
+	cursor, err := parseTimeCursor(req.LatestTime, req.IDBefore)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
 	}
 	viewerAccountID, err := jwt.GetAccountID(c)
 	if err != nil {
 		viewerAccountID = 0
 	}
-	feedItems, err := f.service.ListLatest(c.Request.Context(), req.Limit, latestTime, viewerAccountID)
+	feedItems, err := f.service.ListLatest(c.Request.Context(), req.Limit, cursor, viewerAccountID)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -104,17 +106,31 @@ func (f *FeedHandler) ListByFollowing(c *gin.Context) {
 	if err != nil {
 		viewerAccountID = 0
 	}
-	var latestTime time.Time
-	if req.LatestTime > 0 {
-		latestTime = time.Unix(req.LatestTime, 0)
+	cursor, err := parseTimeCursor(req.LatestTime, req.IDBefore)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
 	}
-	feedItems, err := f.service.ListByFollowing(c.Request.Context(), req.Limit, latestTime, viewerAccountID)
+	feedItems, err := f.service.ListByFollowing(c.Request.Context(), req.Limit, cursor, viewerAccountID)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 	feedItems.VideoList = nonNilFeedVideoItems(feedItems.VideoList)
 	c.JSON(200, feedItems)
+}
+
+func parseTimeCursor(latestTime *int64, idBefore *uint) (*TimeCursor, error) {
+	if latestTime == nil && idBefore == nil {
+		return nil, nil
+	}
+	if latestTime == nil || idBefore == nil {
+		return nil, errors.New("latest_time and id_before must be provided together")
+	}
+	if *idBefore == 0 || *latestTime < 0 || *latestTime > maxFollowingTimestamp {
+		return nil, errors.New("invalid cursor timestamp or ID")
+	}
+	return &TimeCursor{Time: time.UnixMilli(*latestTime).UTC(), ID: *idBefore}, nil
 }
 
 func (f *FeedHandler) ListByPopularity(c *gin.Context) {
@@ -129,6 +145,11 @@ func (f *FeedHandler) ListByPopularity(c *gin.Context) {
 	viewerAccountID, err := jwt.GetAccountID(c)
 	if err != nil {
 		viewerAccountID = 0
+	}
+
+	if req.Offset < 0 {
+		c.JSON(400, gin.H{"error": "offset must be >= 0"})
+		return
 	}
 
 	var latestPopularity int64

@@ -93,14 +93,33 @@ func (c *Client) ZRevRange(ctx context.Context, key string, start, stop int64) (
 	return c.rdb.ZRevRange(ctx, key, start, stop).Result()
 }
 
-func (c *Client) ZRevRangeByScore(ctx context.Context, key string, max, min string, offset, count int64) ([]string, error) {
+// ZRevRangeByLexBatch reads each score-zero sorted set in descending member
+// order. A nonempty before member is excluded from every range.
+func (c *Client) ZRevRangeByLexBatch(ctx context.Context, keys []string, before string, count int64) ([][]string, error) {
 	if c == nil || c.rdb == nil {
-		return nil, nil
+		return nil, errors.New("redis client not initialized")
 	}
-	return c.rdb.ZRevRangeByScore(ctx, key, &redis.ZRangeBy{
-		Max:    max,
-		Min:    min,
-		Offset: offset,
-		Count:  count,
-	}).Result()
+	max := "+"
+	if before != "" {
+		max = "(" + before
+	}
+	ranges := make([]*redis.StringSliceCmd, 0, len(keys))
+	_, err := c.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for _, key := range keys {
+			ranges = append(ranges, pipe.ZRevRangeByLex(ctx, key, &redis.ZRangeBy{Min: "-", Max: max, Count: count}))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	members := make([][]string, len(ranges))
+	for i, cmd := range ranges {
+		members[i] = cmd.Val()
+	}
+	return members, nil
+}
+
+func (c *Client) ZRevRangeByScoreWithScores(ctx context.Context, key, max string, count int64) ([]redis.Z, error) {
+	return c.rdb.ZRevRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{Min: "-inf", Max: max, Count: count}).Result()
 }

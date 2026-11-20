@@ -53,3 +53,28 @@
 本轮覆盖首屏、固定并发和静态数据。Following 仅使用一个测试账号，Popularity 热榜使用合成分钟桶。结果可在相同配置下用于后续对比，深分页、多账号混合、写入并发、冷缓存和 Redis 故障场景均未纳入本轮压测。既有独立评估及历史基线仅用于参考，本表使用本轮采集的数据。
 
 本地保留 [正式测量原始记录](../data/feed-read-reliability/module0-c628b0f/measured/)，包含各场景的 k6 JSON、预检响应、MySQL 计数快照、适配脚本和配置。启动覆盖配置、导入 SQL、首轮数据和计数校准记录也保存在 [本轮实验目录](../data/feed-read-reliability/module0-c628b0f/)。
+
+## 模块 1 · 排序契约与双字段游标
+
+### 接口与排序
+
+| 场景 | 顺序 | 翻页契约 |
+| --- | --- | --- |
+| Latest、Following | `create_time DESC, id DESC` | 首屏省略 `latest_time` 与 `id_before`。下一页将响应的 `next_time` 和 `next_id_before` 原样传回，两项必成对。游标时间是 Unix 毫秒，视频卡片的 `create_time` 仍为 Unix 秒。 |
+| LikesCount | `likes_count DESC, id DESC` | 保留 `likes_count_before` 和 `id_before`，从本页最后一条视频生成下一页边界。 |
+| Popularity | MySQL 使用 `popularity DESC, create_time DESC, id DESC`，Redis 沿用快照排名 | MySQL 延续三字段游标，Redis 延续 `as_of` 和原始榜单位置 `offset`。 |
+
+按时间排序的 MySQL 查询使用 `create_time < ? OR (create_time = ? AND id < ?)`。四个场景都读取最多一条额外的有效结果来判断是否还有下一页。Redis 热榜遇到无效或已删除的候选时继续读取后续排名，下一页位置取最后一个已返回视频之后的榜单位置，探测用的下一条有效视频留给下一页。
+
+### 调用链与失败处理
+
+- 前端 `useVideoFeed` 和 `FeedView` 保存成对的翻页字段，经 `api/feed.ts` 发送给 Feed Handler。Handler 校验双字段后，Service 调用缓存或 Repository，再用 `buildFeedVideos` 组装卡片及点赞状态。少传字段、ID 为零或时间越界时直接返回 HTTP 400。模块 0 历史压测脚本的首屏单字段 `latest_time: 0` 需要在后续对照实验中按被测版本使用对应契约。
+- Latest 旧索引以毫秒为 Redis score、普通字符串 ID 为 member。当读取窗口遇到同一毫秒的多个候选，或者同分边界不能确认时，从 MySQL 获取整页以保证数字 ID 排序。其余页面可从 Redis 取候选，并按末条的时间与 ID 从 MySQL 补齐冷数据。Redis 查询失败或实体缺失也会触发完整 MySQL 查询。新版本时间线和写入格式安排在模块 5。
+- Following 暂时沿用整页缓存，缓存键包含完整的毫秒和 ID，避免命中旧秒级格式。关注关系变化仍通过原有模式失效缓存，命中页面后仍会批查当前点赞状态。Inbox 和 Author Outbox 的混合候选读取安排在模块 2。
+- `FollowingMember` 继续使用 13 位十进制毫秒、冒号和 20 位十进制 VideoID，现支持解析。对于 score 为 0 的候选 ZSET，Redis Client 使用 go-redis Pipeline 批量执行逆序 Lex 范围查询。首屏上界为 `+`，后续页以 `(` 加完整游标 Member 作为排他上界。命令错误传回调用方。
+
+### 验证
+
+- `go test -count=1 -v ./internal/feed ./internal/middleware/redis ./internal/worker` 已通过。Feed 使用隔离 MySQL `gofeed_read_test` 和 miniredis，覆盖同毫秒三页、翻页间插入更新视频、缓存热页、冷热拼接、精确末页、无效游标、Redis Lex 排他与 Pipeline 错误，以及热榜删除项跳过。
+- 本轮未配置 Worker 集成套件的独立连接变量，`TestLikeCommandRelay`、`TestFollowingPipeline`、`TestLikeCommandPipeline`、`TestLikeCommandBatchWorker` 已跳过。
+- `go vet ./internal/feed ./internal/middleware/redis ./internal/worker`、前端 `npm run build` 和 `git diff --check` 已通过。
