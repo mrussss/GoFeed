@@ -65,7 +65,7 @@ func (f *FeedService) followingVideos(ctx context.Context, count int, cursor *Ti
 	if err != nil {
 		return nil, err
 	}
-	return mergeFollowingVideos(videos, history, count), nil
+	return mergeTimeOrderedVideos(videos, history, count), nil
 }
 
 func (f *FeedService) followingFromMySQL(ctx context.Context, count int, viewerID uint, cursor *TimeCursor) ([]*video.Video, error) {
@@ -153,12 +153,12 @@ func (h *followingHeap) Pop() any {
 	return source
 }
 
-func mergeFollowingVideos(cached, history []*video.Video, count int) []*video.Video {
+func mergeTimeOrderedVideos(cached, history []*video.Video, count int) []*video.Video {
 	merged := make([]*video.Video, 0, count)
 	seen := make(map[uint]struct{}, count)
 	for len(merged) < count && (len(cached) > 0 || len(history) > 0) {
 		var next *video.Video
-		if len(history) == 0 || (len(cached) > 0 && !followingVideoBefore(history[0], cached[0])) {
+		if len(history) == 0 || (len(cached) > 0 && !timeOrderedVideoBefore(history[0], cached[0])) {
 			next, cached = cached[0], cached[1:]
 		} else {
 			next, history = history[0], history[1:]
@@ -171,7 +171,7 @@ func mergeFollowingVideos(cached, history []*video.Video, count int) []*video.Vi
 	return merged
 }
 
-func followingVideoBefore(a, b *video.Video) bool {
+func timeOrderedVideoBefore(a, b *video.Video) bool {
 	at, bt := a.CreateTime.UnixMilli(), b.CreateTime.UnixMilli()
 	return at > bt || (at == bt && a.ID > b.ID)
 }

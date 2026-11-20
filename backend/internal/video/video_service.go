@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
 	"feedsystem_video_go/internal/apierror"
 	"feedsystem_video_go/internal/config"
+	"feedsystem_video_go/internal/feedindex"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 
 	"gorm.io/gorm"
@@ -135,7 +135,24 @@ func (vs *VideoService) Delete(ctx context.Context, id uint, authorID uint) erro
 		if err := vs.cache.Del(cacheCtx, vs.cache.Key("video:detail:id=%d", id), vs.cache.Key("video:entity:%d", id)); err != nil {
 			log.Printf("delete video %d: Redis detail/entity eviction failed: %v", id, err)
 		}
-		if err := vs.cache.ZRem(cacheCtx, vs.cache.Key("feed:global_timeline"), strconv.FormatUint(uint64(id), 10)); err != nil {
+		publishedAt := video.CreateTime
+		var err error
+		if publishedAt.IsZero() {
+			// Legacy rows can lack create_time while their publish event has it.
+			var event OutboxMsg
+			err = vs.repo.db.WithContext(cacheCtx).Select("create_time").
+				Where("video_id = ? AND event_type = ?", id, "video_published").
+				Order("id").Take(&event).Error
+			publishedAt = event.CreateTime
+		}
+		if err == nil {
+			var member string
+			member, err = feedindex.FollowingMember(publishedAt.UnixMilli(), id)
+			if err == nil {
+				err = vs.cache.ZRem(cacheCtx, vs.cache.Key(feedindex.GlobalTimelineKey), member)
+			}
+		}
+		if err != nil {
 			log.Printf("delete video %d: Redis timeline eviction failed: %v", id, err)
 		}
 	}

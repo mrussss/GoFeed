@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"feedsystem_video_go/internal/auth"
 	"feedsystem_video_go/internal/config"
 	appdb "feedsystem_video_go/internal/db"
+	"feedsystem_video_go/internal/feedindex"
 	apphttp "feedsystem_video_go/internal/http"
 	"feedsystem_video_go/internal/middleware/rabbitmq"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
@@ -325,19 +325,24 @@ func TestPublishFollowingMySQL(t *testing.T) {
 		must(t, err)
 
 		router := apphttp.SetRouter(db, cache, nil)
-		key := cache.Key("feed:global_timeline")
-		for _, id := range []uint{oldVideo.ID, published.ID} {
+		key := cache.Key(feedindex.GlobalTimelineKey)
+		for _, row := range []struct {
+			id uint
+			at time.Time
+		}{{oldVideo.ID, oldOutbox.CreateTime}, {published.ID, published.CreateTime}} {
+			member, err := feedindex.FollowingMember(row.at.UnixMilli(), row.id)
+			must(t, err)
 			deadline := time.Now().Add(5 * time.Second)
 			for {
-				score, err := raw.ZScore(ctx, key, strconv.FormatUint(uint64(id), 10)).Result()
+				score, err := raw.ZScore(ctx, key, member).Result()
 				if err == nil {
-					if id == published.ID && score != float64(published.CreateTime.UnixMilli()) {
-						t.Fatalf("timeline score = %.0f, want %d", score, published.CreateTime.UnixMilli())
+					if score != 0 {
+						t.Fatalf("timeline score = %.0f, want 0", score)
 					}
 					break
 				}
 				if err != redis.Nil || time.Now().After(deadline) {
-					t.Fatalf("timeline missing video %d: %v", id, err)
+					t.Fatalf("timeline missing video %d: %v", row.id, err)
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
@@ -346,6 +351,13 @@ func TestPublishFollowingMySQL(t *testing.T) {
 		router.ServeHTTP(res, httptest.NewRequest("POST", "/feed/listLatest", strings.NewReader(`{"limit":10}`)))
 		if res.Code != 200 || !strings.Contains(res.Body.String(), "HTTP publication") {
 			t.Fatalf("global feed returned %d: %s", res.Code, res.Body.String())
+		}
+		deleter := video.NewVideoService(video.NewVideoRepository(db), cache)
+		must(t, deleter.Delete(ctx, oldVideo.ID, oldVideo.AuthorID))
+		legacyMember, err := feedindex.FollowingMember(oldOutbox.CreateTime.UnixMilli(), oldVideo.ID)
+		must(t, err)
+		if err := raw.ZScore(ctx, key, legacyMember).Err(); err != redis.Nil {
+			t.Fatalf("legacy deletion left its timeline member: %v", err)
 		}
 	})
 }

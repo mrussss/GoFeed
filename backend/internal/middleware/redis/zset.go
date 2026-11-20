@@ -106,14 +106,11 @@ func (c *Client) ZRevRangeByLexBatch(ctx context.Context, keys []string, before 
 	if c == nil || c.rdb == nil {
 		return nil, errors.New("redis client not initialized")
 	}
-	max := "+"
-	if before != "" {
-		max = "(" + before
-	}
+	rangeBy := reverseLexRange(before, count)
 	ranges := make([]*redis.StringSliceCmd, 0, len(keys))
 	_, err := c.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 		for _, key := range keys {
-			ranges = append(ranges, pipe.ZRevRangeByLex(ctx, key, &redis.ZRangeBy{Min: "-", Max: max, Count: count}))
+			ranges = append(ranges, pipe.ZRevRangeByLex(ctx, key, rangeBy))
 		}
 		return nil
 	})
@@ -127,6 +124,17 @@ func (c *Client) ZRevRangeByLexBatch(ctx context.Context, keys []string, before 
 	return members, nil
 }
 
-func (c *Client) ZRevRangeByScoreWithScores(ctx context.Context, key, max string, count int64) ([]redis.Z, error) {
-	return c.rdb.ZRevRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{Min: "-inf", Max: max, Count: count}).Result()
+func (c *Client) ZRevRangeByLex(ctx context.Context, key, before string, count int64) ([]string, error) {
+	if c == nil || c.rdb == nil {
+		return nil, errors.New("redis client not initialized")
+	}
+	return c.rdb.ZRevRangeByLex(ctx, key, reverseLexRange(before, count)).Result()
+}
+
+func reverseLexRange(before string, count int64) *redis.ZRangeBy {
+	max := "+"
+	if before != "" {
+		max = "(" + before
+	}
+	return &redis.ZRangeBy{Min: "-", Max: max, Count: count}
 }

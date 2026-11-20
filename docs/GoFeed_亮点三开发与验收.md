@@ -206,3 +206,28 @@ Latest Redis 候选查询和重建回填调用使用 50 ms 子 Context。运行�
 - `TestFeedBackpressureMySQL` 在独立 MySQL 和可关闭、可重启的 miniredis 上验证正常、故障与恢复。故障时暖 L1 实体可用，MySQL 返回完整 Feed。持有 8 个执行额度时，覆盖 Latest、Following、LikesCount、Popularity 和 Tag 的 25 个额外请求全部得到 HTTP 503，未进入 SQL。取消在途请求后，新请求获得释放的额度。Redis 恢复后，已预热的 Latest 恢复为零 SQL。
 - `TestFeedSQLDeadlineReleasesSlot` 验证查询期限与额度回收，`TestRuntimeClientHonorsRedisDeadline` 验证运行时客户端从不响应的 Redis 命令退出。现有 Feed 分页、删除一致性和 Singleflight Leader 取消用例一并通过。
 - 全量 `go test -count=1 ./...`、定向 `go test -race`、`go vet` 和 Git diff 检查通过。并发额度测试在 race 模式另重复五轮，均通过。Worker 的 `TestLikeCommandRelay`、`TestLikeCommandPipeline`、`TestLikeCommandBatchWorker`、`TestFollowingPipeline` 在本轮未设置各自连接变量，按条件跳过。实际 Redis 停止与恢复的压测留在模块 6。
+
+## 模块 5 · Latest 与榜单分页
+
+### 四条读取链路
+
+| 场景 | 候选与排序 | 组装、回源与分页 |
+| --- | --- | --- |
+| Latest | `feed:global_timeline:v2`，score 为 0，Member 沿用 `FollowingMember` 的 13 位毫秒和 20 位 ID，从双字段游标严格向后逆序 Lex 读取 | Redis 候选通过 `GetVideoByIDs` 组装。候选数量不足时，从原请求游标查询 MySQL，并按相同顺序归并、去重。Redis 读取失败、Member 无效或实体和索引不匹配时，使用完整 MySQL 页面。空时间线首屏可从 MySQL 重建最近 1,000 条。 |
+| Following | Inbox 和所有已关注作者的 Outbox，保持既有 Pipeline、K 路归并和双字段游标 | 核验关注关系与候选后调用 `GetVideoByIDs`，按需合并 MySQL 历史。 |
+| LikesCount | MySQL 按 `likes_count DESC, id DESC`，查询 `limit+1` 条 | 使用查询已返回的视频行组装，游标取本页末条的点赞数和 ID。恰好填满的末页返回 `has_more=false`。 |
+| Popularity | Redis 使用最近 60 个分钟桶的 ZUNIONSTORE 快照。按 Redis 热度分数降序，同分按固定宽度数字 ID 降序。MySQL 保留 `popularity DESC, create_time DESC, id DESC` 及三字段游标。 | 快照候选经现有存在性 SQL 核验，再用 `GetVideoByIDs`。删除项或无效 Member 之后继续寻找有效结果，按最后一条已返回记录的原始排名位置设置 `next_offset`。快照继续支持 `as_of`、`offset` 和 2 分钟 TTL。 |
+
+四路继续使用 `buildFeedVideos` 组装卡片并批查当前点赞状态。MySQL 已返回完整视频行时直接使用该结果。
+
+### Redis 键与切换边界
+
+Latest 的 Worker、API 重建及删除操作共用新版 Key、Member 编码和 1,000 条上限。删除使用 MySQL 读出的发布时间与 ID 生成精确 Member。无发布时间的旧行从关联发布事件取原时间，保持旧数据的删除清理。延迟发布重新加入无实体候选的边界沿用专项审查结论，读取遇到缺失实体时回源。
+
+Popularity 的新分钟键为 `hot:video:1m:v2:<UTC分钟>`，快照键为 `hot:video:merge:1m:v2:<UTC分钟>`。两种排序索引使用独立版本，旧 Redis 键原样保留，新读写走新版。API 和 Worker 需使用一致版本。新版 Latest 可从 MySQL 重建，新版热榜从当前热度写入开始积累，缺少新版快照数据时首屏走原有 MySQL 回退。跨版本的旧热榜游标可通过刷新首屏重新开始。模块 6 预置热榜时使用新版 Key 和 20 位 ID。
+
+### 验证
+
+- `TestReadPaginationMySQL` 验证旧时间线保持原样、从空新版 Key 重建、同毫秒三页连续读取、暖缓存同毫秒翻页无需 SQL、稀疏 Redis 时间线补进更靠前的 MySQL 视频、LikesCount 同分精确末页与 Popularity 三字段回退。快照测试覆盖同分数字 ID 10 和 9、无效及已删除候选、原始位置偏移和 L2 实体组装。
+- `TestPopularityCacheWriter` 验证新版分钟桶、固定宽度 Member 和 2 小时桶 TTL。`TestVideoDeleteFeedCachesMySQL` 验证新版时间线精确删除及缓存失效失败边界。
+- 在独立 MySQL、Redis、RabbitMQ 及各测试专用 vhost 上运行 `go test -count=1 -p 1 -v ./...`，全部通过，含真实 HTTP 发布到 Worker 写新版时间线、旧数据的删除清理、Following 分发与点赞回归。定向 Feed 与 Redis `go test -race`、全量 `go vet ./...`、前端 `npm run build` 和 Git diff 检查通过。

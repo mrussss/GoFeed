@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"feedsystem_video_go/internal/feedindex"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 	"feedsystem_video_go/internal/social"
 	"feedsystem_video_go/internal/video"
@@ -133,6 +134,15 @@ func readTestMySQL(t *testing.T) *gorm.DB {
 	return db
 }
 
+func timelineZ(t *testing.T, at time.Time, id uint) goredis.Z {
+	t.Helper()
+	member, err := FollowingMember(at.UnixMilli(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return goredis.Z{Score: 0, Member: member}
+}
+
 func TestReadPaginationMySQL(t *testing.T) {
 	db := readTestMySQL(t)
 	ctx := context.Background()
@@ -152,6 +162,10 @@ func TestReadPaginationMySQL(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		legacyTimeline := cache.Key("feed:global_timeline")
+		if err := raw.ZAdd(ctx, legacyTimeline, goredis.Z{Score: float64(at.UnixMilli()), Member: "9999"}).Err(); err != nil {
+			t.Fatal(err)
+		}
 		for _, name := range []string{"latest", "following"} {
 			t.Run(name, func(t *testing.T) {
 				var cursor *TimeCursor
@@ -188,13 +202,29 @@ func TestReadPaginationMySQL(t *testing.T) {
 			})
 		}
 
-		warm, err := service.ListLatest(ctx, 2, nil, 0)
-		if err != nil || !warm.HasMore || !reflect.DeepEqual(feedIDs(warm.VideoList), all[:2]) {
+		timeline := cache.Key(feedindex.GlobalTimelineKey)
+		var wantMembers []string
+		for _, id := range all {
+			wantMembers = append(wantMembers, timelineZ(t, at, id).Member.(string))
+		}
+		if got := raw.ZRevRange(ctx, timeline, 0, -1).Val(); !reflect.DeepEqual(got, wantMembers) {
+			t.Fatalf("rebuilt latest members = %v, want %v", got, wantMembers)
+		}
+		if got := raw.ZRevRange(ctx, legacyTimeline, 0, -1).Val(); !reflect.DeepEqual(got, []string{"9999"}) {
+			t.Fatalf("the old timeline changed: %v", got)
+		}
+
+		if _, err := service.GetVideoByIDs(ctx, all); err != nil {
+			t.Fatal(err)
+		}
+		warmOnly := NewFeedService(nil, nil, nil, cache)
+		warmOnly.localcache = service.localcache
+		warm, err := warmOnly.ListLatest(ctx, 2, &TimeCursor{Time: at, ID: all[1]}, 0)
+		if err != nil || !warm.HasMore || !reflect.DeepEqual(feedIDs(warm.VideoList), all[2:4]) {
 			t.Fatalf("warm latest page = %+v, %v", warm, err)
 		}
-		// Force an old timeline with only one hot record. MySQL must add older
-		// records without changing the page boundary.
-		timeline := cache.Key("feed:global_timeline")
+		// A delayed event may be the only indexed row after rollout. Cold
+		// stitching must insert missing newer rows above it in the page.
 		newer := video.Video{ID: 110, AuthorID: author, CreateTime: at.Add(time.Millisecond)}
 		if err := tx.Create(&newer).Error; err != nil {
 			t.Fatal(err)
@@ -202,12 +232,15 @@ func TestReadPaginationMySQL(t *testing.T) {
 		if err := raw.Del(ctx, timeline).Err(); err != nil {
 			t.Fatal(err)
 		}
-		if err := raw.ZAdd(ctx, timeline, goredis.Z{Score: float64(newer.CreateTime.UnixMilli()), Member: "110"}).Err(); err != nil {
+		if err := raw.ZAdd(ctx, timeline, timelineZ(t, at, 109)).Err(); err != nil {
 			t.Fatal(err)
 		}
 		stitched, err := service.ListLatest(ctx, 2, nil, 0)
 		if err != nil || !stitched.HasMore || !reflect.DeepEqual(feedIDs(stitched.VideoList), []uint{110, 109}) {
 			t.Fatalf("stitched latest page = %+v, %v", stitched, err)
+		}
+		if _, err := service.GetVideoByIDs(ctx, []uint{110}); err != nil {
+			t.Fatal(err)
 		}
 		if err := tx.Delete(&video.Video{}, 110).Error; err != nil {
 			t.Fatal(err)
@@ -219,7 +252,8 @@ func TestReadPaginationMySQL(t *testing.T) {
 			t.Fatalf("first likes page = %+v, %v", likes, err)
 		}
 		likes, err = service.ListLikesCount(ctx, 3, &LikesCountCursor{LikesCount: *likes.NextLikesCountBefore, ID: *likes.NextIDBefore}, 0)
-		if err != nil || likes.HasMore || !reflect.DeepEqual(feedIDs(likes.VideoList), all[3:]) {
+		if err != nil || likes.HasMore || !reflect.DeepEqual(feedIDs(likes.VideoList), all[3:]) ||
+			*likes.NextLikesCountBefore != 3 || *likes.NextIDBefore != all[5] {
 			t.Fatalf("last likes page = %+v, %v", likes, err)
 		}
 
@@ -233,14 +267,19 @@ func TestReadPaginationMySQL(t *testing.T) {
 		}
 
 		minute := time.Now().UTC().Truncate(time.Minute).Add(-time.Minute)
-		key := cache.Key("hot:video:1m:%s", minute.Format("200601021504"))
+		key := cache.Key(feedindex.PopularityBucketKey, minute.Format(feedindex.PopularityMinuteFormat))
 		if err := raw.ZAdd(ctx, key,
-			goredis.Z{Score: 5, Member: "19"}, goredis.Z{Score: 4, Member: "12"},
-			goredis.Z{Score: 3, Member: "110"}, goredis.Z{Score: 2, Member: "9"},
+			goredis.Z{Score: 6, Member: "19"}, // An invalid old-format member.
+			goredis.Z{Score: 5, Member: feedindex.PopularityMember(19)},
+			goredis.Z{Score: 4, Member: feedindex.PopularityMember(12)},
+			goredis.Z{Score: 3, Member: feedindex.PopularityMember(110)},
+			goredis.Z{Score: 2, Member: feedindex.PopularityMember(9)},
+			goredis.Z{Score: 2, Member: feedindex.PopularityMember(10)},
 		).Err(); err != nil {
 			t.Fatal(err)
 		}
 		cachedRank := video.Video{ID: 19, AuthorID: author, CreateTime: at, Title: "cached ranking entity"}
+		service.EvictVideo(cachedRank.ID)
 		payload, err := json.Marshal(cachedRank)
 		if err != nil {
 			t.Fatal(err)
@@ -249,11 +288,11 @@ func TestReadPaginationMySQL(t *testing.T) {
 			t.Fatal(err)
 		}
 		rank, err := service.ListByPopularity(ctx, 2, minute.Unix(), 0, 0, 0, time.Time{}, 0)
-		if err != nil || !rank.HasMore || rank.NextOffset != 2 || !reflect.DeepEqual(feedIDs(rank.VideoList), []uint{19, 12}) || rank.VideoList[0].Title != cachedRank.Title {
+		if err != nil || !rank.HasMore || rank.NextOffset != 3 || !reflect.DeepEqual(feedIDs(rank.VideoList), []uint{19, 12}) || rank.VideoList[0].Title != cachedRank.Title {
 			t.Fatalf("first snapshot page = %+v, %v", rank, err)
 		}
 		rank, err = service.ListByPopularity(ctx, 2, minute.Unix(), rank.NextOffset, 0, 0, time.Time{}, 0)
-		if err != nil || rank.HasMore || rank.NextOffset != 4 || !reflect.DeepEqual(feedIDs(rank.VideoList), []uint{9}) {
+		if err != nil || rank.HasMore || rank.NextOffset != 6 || !reflect.DeepEqual(feedIDs(rank.VideoList), []uint{10, 9}) {
 			t.Fatalf("last snapshot page = %+v, %v", rank, err)
 		}
 		return rollback
@@ -754,16 +793,15 @@ func TestVideoDeleteFeedCachesMySQL(t *testing.T) {
 				if err := tx.Create(&fixture).Error; err != nil {
 					t.Fatal(err)
 				}
-				timeline := cache.Key("feed:global_timeline")
-				if err := raw.ZAdd(ctx, timeline,
-					goredis.Z{Score: float64(now.UnixMilli()), Member: "11"},
-					goredis.Z{Score: float64(now.Add(-time.Second).UnixMilli()), Member: "12"},
-				).Err(); err != nil {
+				timeline := cache.Key(feedindex.GlobalTimelineKey)
+				deleteEntry, keepEntry := timelineZ(t, now, 11), timelineZ(t, now.Add(-time.Second), 12)
+				if err := raw.ZAdd(ctx, timeline, deleteEntry, keepEntry).Err(); err != nil {
 					t.Fatal(err)
 				}
 				asOf := now.Truncate(time.Minute)
-				snapshot := cache.Key("hot:video:merge:1m:%s", asOf.Format("200601021504"))
-				if err := raw.ZAdd(ctx, snapshot, goredis.Z{Score: 2, Member: "11"}, goredis.Z{Score: 1, Member: "12"}).Err(); err != nil {
+				snapshot := cache.Key(feedindex.PopularitySnapshotKey, asOf.Format(feedindex.PopularityMinuteFormat))
+				deletedRank, keptRank := feedindex.PopularityMember(11), feedindex.PopularityMember(12)
+				if err := raw.ZAdd(ctx, snapshot, goredis.Z{Score: 2, Member: deletedRank}, goredis.Z{Score: 1, Member: keptRank}).Err(); err != nil {
 					t.Fatal(err)
 				}
 				if err := raw.Expire(ctx, snapshot, 2*time.Minute).Err(); err != nil {
@@ -799,7 +837,7 @@ func TestVideoDeleteFeedCachesMySQL(t *testing.T) {
 				gotKeys := raw.Exists(ctx, entity, detail).Val()
 				gotTimeline := raw.ZRevRange(ctx, timeline, 0, -1).Val()
 				if fail {
-					if gotKeys != 2 || !reflect.DeepEqual(gotTimeline, []string{"11", "12"}) {
+					if gotKeys != 2 || !reflect.DeepEqual(gotTimeline, []string{deleteEntry.Member.(string), keepEntry.Member.(string)}) {
 						t.Fatalf("failed eviction keys=%d; timeline=%v", gotKeys, gotTimeline)
 					}
 					checkLatest(feeds, 11, 12)
@@ -809,7 +847,7 @@ func TestVideoDeleteFeedCachesMySQL(t *testing.T) {
 						t.Fatal("stale Redis keys exceeded their TTL")
 					}
 				} else {
-					if gotKeys != 0 || !reflect.DeepEqual(gotTimeline, []string{"12"}) {
+					if gotKeys != 0 || !reflect.DeepEqual(gotTimeline, []string{keepEntry.Member.(string)}) {
 						t.Fatalf("successful eviction keys=%d; timeline=%v", gotKeys, gotTimeline)
 					}
 					checkLatest(feeds, 12)
@@ -818,7 +856,7 @@ func TestVideoDeleteFeedCachesMySQL(t *testing.T) {
 
 				rank, err := other.ListByPopularity(ctx, 10, asOf.Unix(), 0, 0, 0, time.Time{}, 0)
 				if err != nil || rank.AsOf != asOf.Unix() || !reflect.DeepEqual(feedIDs(rank.VideoList), []uint{12}) ||
-					!reflect.DeepEqual(raw.ZRevRange(ctx, snapshot, 0, -1).Val(), []string{"11", "12"}) {
+					!reflect.DeepEqual(raw.ZRevRange(ctx, snapshot, 0, -1).Val(), []string{deletedRank, keptRank}) {
 					t.Fatalf("popularity = %+v, error %v", rank, err)
 				}
 				if fail {
@@ -870,9 +908,9 @@ func TestFeedBackpressureMySQL(t *testing.T) {
 	t.Cleanup(func() { _ = raw.Close() })
 	cache := rediscache.NewClient(raw, "test-read-budget:")
 	service := NewFeedService(NewFeedRepository(db), video.NewLikeRepository(db), social.NewSocialRepository(db), cache)
-	timeline := cache.Key("feed:global_timeline")
+	timeline := cache.Key(feedindex.GlobalTimelineKey)
 	for _, row := range fixture {
-		if err := raw.ZAdd(ctx, timeline, goredis.Z{Score: float64(row.CreateTime.UnixMilli()), Member: fmt.Sprint(row.ID)}).Err(); err != nil {
+		if err := raw.ZAdd(ctx, timeline, timelineZ(t, row.CreateTime, row.ID)).Err(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1024,5 +1062,24 @@ func TestFeedSQLDeadlineReleasesSlot(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed < feedQueryTimeout || elapsed > time.Second {
 		t.Fatalf("observed SQL timeout %v", elapsed)
+	}
+}
+
+func TestPopularityCacheWriter(t *testing.T) {
+	ctx := context.Background()
+	cache, raw := readTestRedis(t)
+	if err := video.UpdatePopularityCache(ctx, cache, 10, 2); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := raw.Keys(ctx, cache.Key("hot:video:1m:v2:*")).Result()
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("minute buckets = %v, %v", keys, err)
+	}
+	rank, err := raw.ZRevRangeWithScores(ctx, keys[0], 0, -1).Result()
+	if err != nil || !reflect.DeepEqual(rank, []goredis.Z{{Score: 2, Member: "00000000000000000010"}}) {
+		t.Fatalf("rank member = %v, %v", rank, err)
+	}
+	if ttl := raw.TTL(ctx, keys[0]).Val(); ttl != 2*time.Hour {
+		t.Fatalf("minute bucket TTL = %v", ttl)
 	}
 }

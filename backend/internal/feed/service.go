@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"feedsystem_video_go/internal/feedindex"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 	"feedsystem_video_go/internal/social"
 	"feedsystem_video_go/internal/video"
 	"fmt"
 	"log"
+	"math"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/patrickmn/go-cache"
@@ -184,33 +185,41 @@ func (f *FeedService) latestCandidates(ctx context.Context, count int, cursor *T
 		return f.latestFromMySQL(ctx, count, cursor)
 	}
 
-	timelineKey := f.rediscache.Key("feed:global_timeline")
-	maxScore, readCount := "+inf", count
+	timelineKey := f.rediscache.Key(feedindex.GlobalTimelineKey)
+	var before string
 	if cursor != nil {
-		// Include the cursor's score to detect ties in the legacy timeline.
-		maxScore = strconv.FormatInt(cursor.Time.UnixMilli(), 10)
-		readCount++
+		var err error
+		before, err = FollowingMember(cursor.Time.UnixMilli(), cursor.ID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	members, err := f.rediscache.ZRevRangeByScoreWithScores(cacheCtx, timelineKey, maxScore, int64(readCount))
+	members, err := f.rediscache.ZRevRangeByLex(cacheCtx, timelineKey, before, int64(count))
 	cancel()
 	if err != nil {
 		return f.latestFromMySQL(ctx, count, cursor)
 	}
 
 	if len(members) == 0 && cursor == nil {
-		flight := f.requestGroup.DoChan(f.rediscache.Key("sf:fallback:global_timeline_rebuild"), func() (interface{}, error) {
-			videos, err := f.latestFromMySQL(ctx, 1000, nil)
+		flight := f.requestGroup.DoChan(timelineKey, func() (interface{}, error) {
+			videos, err := f.latestFromMySQL(ctx, feedindex.GlobalTimelineLimit, nil)
 			if err != nil || len(videos) == 0 {
 				return videos, err
 			}
 			entries := make([]redis.Z, 0, len(videos))
 			for _, video := range videos {
-				entries = append(entries, redis.Z{Score: float64(video.CreateTime.UnixMilli()), Member: strconv.FormatUint(uint64(video.ID), 10)})
+				if member, err := FollowingMember(video.CreateTime.UnixMilli(), video.ID); err == nil {
+					entries = append(entries, redis.Z{Score: 0, Member: member})
+				}
 			}
-			cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-			defer cancel()
-			_ = f.rediscache.ZAdd(cacheCtx, timelineKey, entries...)
+			if len(entries) != 0 {
+				cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+				defer cancel()
+				if err := f.rediscache.ZAdd(cacheCtx, timelineKey, entries...); err == nil {
+					_ = f.rediscache.ZRemRangeByRank(cacheCtx, timelineKey, 0, -feedindex.GlobalTimelineLimit-1)
+				}
+			}
 			return videos, nil
 		})
 		select {
@@ -225,11 +234,18 @@ func (f *FeedService) latestCandidates(ctx context.Context, count int, cursor *T
 		}
 	}
 
-	ids, ordered := legacyLatestIDs(members, cursor)
-	if !ordered || len(ids) == 0 {
+	if len(members) == 0 {
 		return f.latestFromMySQL(ctx, count, cursor)
 	}
-	ids = ids[:min(len(ids), count)]
+	ids := make([]uint, len(members))
+	timestamps := make([]int64, len(members))
+	for i, member := range members {
+		at, id, err := ParseFollowingMember(member)
+		if err != nil {
+			return f.latestFromMySQL(ctx, count, cursor)
+		}
+		ids[i], timestamps[i] = id, at
+	}
 	videos, err := f.GetVideoByIDs(ctx, ids)
 	if err != nil {
 		return nil, err
@@ -237,14 +253,19 @@ func (f *FeedService) latestCandidates(ctx context.Context, count int, cursor *T
 	if len(videos) != len(ids) {
 		return f.latestFromMySQL(ctx, count, cursor)
 	}
+	for i, v := range videos {
+		if v.CreateTime.UnixMilli() != timestamps[i] {
+			return f.latestFromMySQL(ctx, count, cursor)
+		}
+	}
 	if len(videos) < count {
-		last := videos[len(videos)-1]
-		coldCursor := &TimeCursor{Time: last.CreateTime, ID: last.ID}
-		cold, err := f.latestFromMySQL(ctx, count-len(videos), coldCursor)
+		// A partially populated timeline can miss rows anywhere after the
+		// request cursor, including rows newer than its oldest candidate.
+		cold, err := f.latestFromMySQL(ctx, count, cursor)
 		if err != nil {
 			return nil, err
 		}
-		videos = append(videos, cold...)
+		videos = mergeTimeOrderedVideos(videos, cold, count)
 	}
 	return videos, nil
 }
@@ -253,27 +274,6 @@ func (f *FeedService) latestFromMySQL(ctx context.Context, count int, cursor *Ti
 	return readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
 		return f.repo.ListLatest(queryCtx, count, cursor)
 	})
-}
-
-// Redis orders equal scores by string ID on the legacy key. Defer those pages
-// to MySQL, which can enforce the numeric tie-break without scanning a tie.
-func legacyLatestIDs(members []redis.Z, cursor *TimeCursor) ([]uint, bool) {
-	ids := make([]uint, 0, len(members))
-	for i, entry := range members {
-		member, ok := entry.Member.(string)
-		id, err := strconv.ParseUint(member, 10, strconv.IntSize)
-		if !ok || err != nil || id == 0 || (i > 0 && members[i-1].Score == entry.Score) {
-			return nil, false
-		}
-		if cursor != nil && entry.Score == float64(cursor.Time.UnixMilli()) {
-			if uint(id) != cursor.ID {
-				return nil, false
-			}
-			continue
-		}
-		ids = append(ids, uint(id))
-	}
-	return ids, true
 }
 
 func (f *FeedService) buildTimePage(ctx context.Context, videos []*video.Video, limit int, viewerAccountID uint) (ListLatestResponse, error) {
@@ -334,10 +334,10 @@ func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf i
 		const win = 60
 		keys := make([]string, 0, win)
 		for i := 0; i < win; i++ {
-			keys = append(keys, f.rediscache.Key("hot:video:1m:%s", asOf.Add(-time.Duration(i)*time.Minute).Format("200601021504")))
+			keys = append(keys, f.rediscache.Key(feedindex.PopularityBucketKey, asOf.Add(-time.Duration(i)*time.Minute).Format(feedindex.PopularityMinuteFormat)))
 		}
 
-		dest := f.rediscache.Key("hot:video:merge:1m:%s", asOf.Format("200601021504")) // 快照key：同一个as_of页内复用
+		dest := f.rediscache.Key(feedindex.PopularitySnapshotKey, asOf.Format(feedindex.PopularityMinuteFormat)) // 快照key：同一个as_of页内复用
 		opCtx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
 		defer cancel()
 
@@ -400,7 +400,7 @@ func (f *FeedService) popularitySnapshotPage(ctx, redisCtx context.Context, key 
 	nextOffset := offset
 	for start := int64(offset); len(videos) <= limit; {
 		batchSize := int64(limit + 1)
-		stop := start + batchSize - 1
+		stop := start + min(batchSize-1, math.MaxInt64-start)
 		members, err := f.rediscache.ZRevRange(redisCtx, key, start, stop)
 		if err != nil {
 			return nil, offset, fmt.Errorf("%w: %w", errPopularitySnapshotUnavailable, err)
@@ -408,8 +408,7 @@ func (f *FeedService) popularitySnapshotPage(ctx, redisCtx context.Context, key 
 		idsByRank := make([]uint, len(members))
 		ids := make([]uint, 0, len(members))
 		for i, member := range members {
-			if parsed, err := strconv.ParseUint(member, 10, strconv.IntSize); err == nil && parsed != 0 {
-				id := uint(parsed)
+			if id, err := feedindex.ParsePopularityMember(member); err == nil {
 				idsByRank[i] = id
 				ids = append(ids, id)
 			}

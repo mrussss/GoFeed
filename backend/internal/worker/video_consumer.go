@@ -6,10 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"time"
 
 	"feedsystem_video_go/internal/config"
+	"feedsystem_video_go/internal/feed"
+	"feedsystem_video_go/internal/feedindex"
 	"feedsystem_video_go/internal/middleware/rabbitmq"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 
@@ -23,9 +24,12 @@ type quarantineVideoDelivery func(context.Context, amqp.Delivery, string, error)
 
 func RunGlobalTimelineConsumer(ctx context.Context, cfg config.RabbitMQConfig, cache *rediscache.Client) {
 	runVideoConsumer(ctx, cfg, rabbitmq.GlobalTimelineQueue, func(ctx context.Context, event rabbitmq.TimelineEvent) error {
-		keys := []string{cache.Key("feed:global_timeline")}
-		member := oredis.Z{Score: float64(event.CreateTime), Member: strconv.FormatUint(uint64(event.VideoID), 10)}
-		return cache.AddBoundedZSets(ctx, keys, member, 1000)
+		member, err := feed.FollowingMember(event.CreateTime, event.VideoID)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errInvalidVideoEvent, err)
+		}
+		key := cache.Key(feedindex.GlobalTimelineKey)
+		return cache.AddBoundedZSets(ctx, []string{key}, oredis.Z{Score: 0, Member: member}, feedindex.GlobalTimelineLimit)
 	}, nil)
 }
 

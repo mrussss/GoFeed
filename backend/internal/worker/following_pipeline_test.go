@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,6 +21,7 @@ import (
 	"feedsystem_video_go/internal/config"
 	appdb "feedsystem_video_go/internal/db"
 	"feedsystem_video_go/internal/feed"
+	"feedsystem_video_go/internal/feedindex"
 	"feedsystem_video_go/internal/middleware/rabbitmq"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 	"feedsystem_video_go/internal/social"
@@ -234,10 +234,10 @@ func TestFollowingPipeline(t *testing.T) {
 			return err == nil && n == score
 		}, "member "+member+" in "+key)
 	}
-	globalKey := cache.Key("feed:global_timeline")
+	globalKey := cache.Key(feedindex.GlobalTimelineKey)
 	waitGlobal := func(t *testing.T, e rabbitmq.TimelineEvent) {
 		t.Helper()
-		waitKey(t, globalKey, strconv.FormatUint(uint64(e.VideoID), 10), float64(e.CreateTime))
+		waitKey(t, globalKey, member(t, e), 0)
 	}
 	fence := func(t *testing.T, id uint) {
 		t.Helper()
@@ -371,8 +371,8 @@ func TestFollowingPipeline(t *testing.T) {
 		row := publishVideo(t)
 		deleter := video.NewVideoService(video.NewVideoRepository(db), cache)
 		mustFollowing(t, deleter.Delete(ctx, row.VideoID, 1))
-		member := strconv.FormatUint(uint64(row.VideoID), 10)
-		if err := raw.ZScore(ctx, globalKey, member).Err(); !errors.Is(err, redis.Nil) {
+		target := member(t, rabbitmq.TimelineEvent{VideoID: row.VideoID, CreateTime: row.CreateTime.UnixMilli()})
+		if err := raw.ZScore(ctx, globalKey, target).Err(); !errors.Is(err, redis.Nil) {
 			t.Fatalf("deleted candidate before outbox relay: %v", err)
 		}
 		_, err := worker.RelayVideoOutboxOnce(ctx, db, publisher)
