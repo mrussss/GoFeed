@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,10 +18,11 @@ import (
 )
 
 type VideoService struct {
-	repo          *VideoRepository
-	cache         *rediscache.Client
-	cacheTTL      time.Duration
-	followingFeed config.FollowingFeedConfig
+	repo           *VideoRepository
+	cache          *rediscache.Client
+	cacheTTL       time.Duration
+	followingFeed  config.FollowingFeedConfig
+	evictFeedVideo func(uint)
 }
 
 func NewVideoService(repo *VideoRepository, cache *rediscache.Client, followingFeed ...config.FollowingFeedConfig) *VideoService {
@@ -28,6 +31,11 @@ func NewVideoService(repo *VideoRepository, cache *rediscache.Client, followingF
 		thresholds = followingFeed[0]
 	}
 	return &VideoService{repo: repo, cache: cache, cacheTTL: 60 * time.Second, followingFeed: thresholds}
+}
+
+// SetFeedVideoEviction wires the router's process-local Feed cache before serving.
+func (vs *VideoService) SetFeedVideoEviction(evict func(uint)) {
+	vs.evictFeedVideo = evict
 }
 
 func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
@@ -122,8 +130,17 @@ func (vs *VideoService) Delete(ctx context.Context, id uint, authorID uint) erro
 		return err
 	}
 	if vs.cache != nil {
-		cacheKey := vs.cache.Key("video:detail:id=%d", id)
-		_ = vs.cache.Del(context.Background(), cacheKey)
+		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 50*time.Millisecond)
+		defer cancel()
+		if err := vs.cache.Del(cacheCtx, vs.cache.Key("video:detail:id=%d", id), vs.cache.Key("video:entity:%d", id)); err != nil {
+			log.Printf("delete video %d: Redis detail/entity eviction failed: %v", id, err)
+		}
+		if err := vs.cache.ZRem(cacheCtx, vs.cache.Key("feed:global_timeline"), strconv.FormatUint(uint64(id), 10)); err != nil {
+			log.Printf("delete video %d: Redis timeline eviction failed: %v", id, err)
+		}
+	}
+	if vs.evictFeedVideo != nil {
+		vs.evictFeedVideo(id)
 	}
 	return nil
 }

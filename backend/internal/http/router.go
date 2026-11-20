@@ -74,6 +74,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ, fo
 		protectedVideoGroup.POST("/uploadVideo", videoHandler.UploadVideo)
 		protectedVideoGroup.POST("/uploadCover", videoHandler.UploadCover)
 		protectedVideoGroup.POST("/publish", videoHandler.PublishVideo)
+		protectedVideoGroup.POST("/delete", videoHandler.DeleteVideo)
 		protectedVideoGroup.POST("/chunk/init", chunkHandler.InitChunkUpload)
 		protectedVideoGroup.POST("/chunk/upload", chunkHandler.UploadChunk)
 		protectedVideoGroup.POST("/chunk/status", chunkHandler.ChunkStatus)
@@ -160,6 +161,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ, fo
 	// feed
 	feedRepository := feed.NewFeedRepository(db)
 	feedService := feed.NewFeedService(feedRepository, likeRepository, socialRepository, cache)
+	videoService.SetFeedVideoEviction(feedService.EvictVideo)
 	feedHandler := feed.NewFeedHandler(feedService)
 	feedGroup := r.Group("/feed")
 	feedGroup.Use(jwt.SoftJWTAuth(accountRepository, cache))

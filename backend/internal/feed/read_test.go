@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -619,4 +620,231 @@ type flightWaitContext struct {
 func (ctx *flightWaitContext) Done() <-chan struct{} {
 	ctx.once.Do(func() { close(ctx.entered) })
 	return ctx.Context.Done()
+}
+
+func TestVideoLookupLeaderCancellationMySQL(t *testing.T) {
+	db := readTestMySQL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	leaderCtx, cancelLeader := context.WithCancel(ctx)
+	defer cancelLeader()
+	service := NewFeedService(NewFeedRepository(db), nil, nil, nil)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := sqlDB.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	lockName := fmt.Sprintf("gofeed_read_leader_%d", time.Now().UnixNano())
+	var acquired int
+	if err := held.QueryRowContext(ctx, "SELECT GET_LOCK(?, 0)", lockName).Scan(&acquired); err != nil || acquired != 1 {
+		t.Fatalf("acquire test lock: %d, %v", acquired, err)
+	}
+	defer func() {
+		releaseCtx, release := context.WithTimeout(context.Background(), time.Second)
+		defer release()
+		_, _ = held.ExecContext(releaseCtx, "DO RELEASE_LOCK(?)", lockName)
+	}()
+
+	queryEntered, queryResult := make(chan struct{}), make(chan error, 1)
+	var calls atomic.Int32
+	statement := fmt.Sprintf("DO GET_LOCK('%s', 30)", lockName)
+	if err := db.Callback().Query().Before("gorm:query").Register("test:cancel_leader_sql", func(tx *gorm.DB) {
+		if tx.Statement.Table != "videos" {
+			return
+		}
+		if calls.Add(1) == 1 {
+			close(queryEntered)
+		}
+		_, err := tx.Statement.ConnPool.ExecContext(tx.Statement.Context, statement)
+		if err == nil {
+			err = errors.New("blocking SQL unexpectedly finished")
+		}
+		_ = tx.AddError(err)
+		queryResult <- err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := func(requestCtx context.Context) <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			_, err := service.GetVideoByIDs(requestCtx, []uint{1})
+			done <- err
+		}()
+		return done
+	}
+	wait := func(ch <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			t.Fatal("lookup did not reach the expected phase")
+		}
+	}
+	first := start(leaderCtx)
+	wait(queryEntered)
+	waiter := &flightWaitContext{Context: ctx, entered: make(chan struct{})}
+	second := start(waiter)
+	wait(waiter.entered)
+
+	// Confirm the driver has sent the blocking SQL before canceling its owner.
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var active int64
+		if err := db.WithContext(ctx).Raw("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO = ?", statement).Scan(&active).Error; err != nil {
+			t.Fatal(err)
+		}
+		if active == 1 {
+			break
+		}
+
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("the shared SQL never became active")
+		}
+	}
+	cancelLeader()
+	for name, ch := range map[string]<-chan error{"SQL": queryResult, "leader": first, "waiter": second} {
+		select {
+		case err := <-ch:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("%s returned %v", name, err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("%s did not exit", name)
+		}
+	}
+	if ctx.Err() != nil || calls.Load() != 1 {
+		t.Fatalf("waiter context=%v SQL calls=%d", ctx.Err(), calls.Load())
+	}
+}
+
+func TestVideoDeleteFeedCachesMySQL(t *testing.T) {
+	db := readTestMySQL(t)
+	ctx := context.Background()
+	rollback := errors.New("rollback video deletion fixture")
+	for _, fail := range []bool{false, true} {
+		name := "eviction"
+		if fail {
+			name = "redis_write_failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			err := db.Transaction(func(tx *gorm.DB) error {
+				server := miniredis.RunT(t)
+				raw := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
+				defer raw.Close()
+				cache := rediscache.NewClient(raw, "read-delete-test:")
+				repo := NewFeedRepository(tx)
+				feeds := NewFeedService(repo, video.NewLikeRepository(tx), nil, cache)
+				other := NewFeedService(repo, video.NewLikeRepository(tx), nil, cache)
+				videos := video.NewVideoService(video.NewVideoRepository(tx), cache)
+				videos.SetFeedVideoEviction(feeds.EvictVideo)
+				now := time.Now().UTC().Truncate(time.Millisecond)
+				fixture := []video.Video{
+					{ID: 11, AuthorID: 1, CreateTime: now},
+					{ID: 12, AuthorID: 1, CreateTime: now.Add(-time.Second)},
+				}
+				if err := tx.Create(&fixture).Error; err != nil {
+					t.Fatal(err)
+				}
+				timeline := cache.Key("feed:global_timeline")
+				if err := raw.ZAdd(ctx, timeline,
+					goredis.Z{Score: float64(now.UnixMilli()), Member: "11"},
+					goredis.Z{Score: float64(now.Add(-time.Second).UnixMilli()), Member: "12"},
+				).Err(); err != nil {
+					t.Fatal(err)
+				}
+				asOf := now.Truncate(time.Minute)
+				snapshot := cache.Key("hot:video:merge:1m:%s", asOf.Format("200601021504"))
+				if err := raw.ZAdd(ctx, snapshot, goredis.Z{Score: 2, Member: "11"}, goredis.Z{Score: 1, Member: "12"}).Err(); err != nil {
+					t.Fatal(err)
+				}
+				if err := raw.Expire(ctx, snapshot, 2*time.Minute).Err(); err != nil {
+					t.Fatal(err)
+				}
+
+				entity, detail := feeds.videoEntityKey(11), cache.Key("video:detail:id=%d", 11)
+				if _, err := videos.GetDetail(ctx, 11); err != nil {
+					t.Fatal(err)
+				}
+				checkLatest := func(s *FeedService, want ...uint) {
+					t.Helper()
+					page, err := s.ListLatest(ctx, 10, nil, 0)
+					if err != nil || !reflect.DeepEqual(feedIDs(page.VideoList), want) {
+						t.Fatalf("latest = %v, error %v, want %v", feedIDs(page.VideoList), err, want)
+					}
+				}
+				checkLatest(feeds, 11, 12)
+				checkLatest(other, 11, 12)
+				if got := raw.Exists(ctx, entity, detail).Val(); got != 2 {
+					t.Fatalf("warm cache has %d of the two Redis keys", got)
+				}
+				if fail {
+					raw.AddHook(&deleteFailureHook{})
+				}
+				if err := videos.Delete(ctx, 11, 1); err != nil {
+					t.Fatal(err)
+				}
+				if feeds.localVideo(11) != nil || other.localVideo(11) == nil {
+					t.Fatal("cache eviction did not have process-local scope")
+				}
+
+				gotKeys := raw.Exists(ctx, entity, detail).Val()
+				gotTimeline := raw.ZRevRange(ctx, timeline, 0, -1).Val()
+				if fail {
+					if gotKeys != 2 || !reflect.DeepEqual(gotTimeline, []string{"11", "12"}) {
+						t.Fatalf("failed eviction keys=%d; timeline=%v", gotKeys, gotTimeline)
+					}
+					checkLatest(feeds, 11, 12)
+					// Advance only the test Redis clock. L1 retains its real five-second TTL.
+					server.FastForward(time.Minute)
+					if raw.Exists(ctx, entity, detail).Val() != 0 {
+						t.Fatal("stale Redis keys exceeded their TTL")
+					}
+				} else {
+					if gotKeys != 0 || !reflect.DeepEqual(gotTimeline, []string{"12"}) {
+						t.Fatalf("successful eviction keys=%d; timeline=%v", gotKeys, gotTimeline)
+					}
+					checkLatest(feeds, 12)
+					checkLatest(other, 12)
+				}
+
+				rank, err := other.ListByPopularity(ctx, 10, asOf.Unix(), 0, 0, 0, time.Time{}, 0)
+				if err != nil || rank.AsOf != asOf.Unix() || !reflect.DeepEqual(feedIDs(rank.VideoList), []uint{12}) ||
+					!reflect.DeepEqual(raw.ZRevRange(ctx, snapshot, 0, -1).Val(), []string{"11", "12"}) {
+					t.Fatalf("popularity = %+v, error %v", rank, err)
+				}
+				if fail {
+					timer := time.NewTimer(videoLocalTTL + 50*time.Millisecond)
+					defer timer.Stop()
+					<-timer.C
+					checkLatest(feeds, 12)
+				}
+				return rollback
+			})
+			if !errors.Is(err, rollback) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+type deleteFailureHook struct {
+	videoRedisCalls
+}
+
+func (*deleteFailureHook) ProcessHook(next goredis.ProcessHook) goredis.ProcessHook {
+	return func(ctx context.Context, cmd goredis.Cmder) error {
+		if cmd.Name() == "del" || cmd.Name() == "zrem" {
+			return errors.New("injected Redis eviction failure")
+		}
+		return next(ctx, cmd)
+	}
 }

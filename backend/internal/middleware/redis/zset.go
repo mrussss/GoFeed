@@ -47,6 +47,13 @@ func (c *Client) ZAdd(ctx context.Context, key string, members ...redis.Z) error
 	return c.rdb.ZAdd(ctx, key, members...).Err()
 }
 
+func (c *Client) ZRem(ctx context.Context, key string, member string) error {
+	if c == nil || c.rdb == nil {
+		return errors.New("redis client not initialized")
+	}
+	return c.rdb.ZRem(ctx, key, member).Err()
+}
+
 func (c *Client) ZRemRangeByRank(ctx context.Context, key string, start int64, stop int64) error {
 	if c == nil || c.rdb == nil {
 		return nil

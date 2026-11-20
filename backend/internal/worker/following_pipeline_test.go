@@ -367,6 +367,25 @@ func TestFollowingPipeline(t *testing.T) {
 		waitKey(t, key, member(t, e), 0)
 	})
 
+	t.Run("pending_publish_after_delete_can_readd_timeline_candidate", func(t *testing.T) {
+		row := publishVideo(t)
+		deleter := video.NewVideoService(video.NewVideoRepository(db), cache)
+		mustFollowing(t, deleter.Delete(ctx, row.VideoID, 1))
+		member := strconv.FormatUint(uint64(row.VideoID), 10)
+		if err := raw.ZScore(ctx, globalKey, member).Err(); !errors.Is(err, redis.Nil) {
+			t.Fatalf("deleted candidate before outbox relay: %v", err)
+		}
+		_, err := worker.RelayVideoOutboxOnce(ctx, db, publisher)
+		mustFollowing(t, err)
+		waitGlobal(t, rabbitmq.TimelineEvent{VideoID: row.VideoID, CreateTime: row.CreateTime.UnixMilli()})
+		reader := feed.NewFeedService(feed.NewFeedRepository(db), video.NewLikeRepository(db), social.NewSocialRepository(db), cache)
+		rows, err := reader.GetVideoByIDs(ctx, []uint{row.VideoID})
+		mustFollowing(t, err)
+		if len(rows) != 0 {
+			t.Fatalf("replayed candidate resurrected deleted entity: %+v", rows)
+		}
+	})
+
 	t.Run("push_follower_pages", func(t *testing.T) {
 		for i, n := range []int{0, 1, 201, 1000} {
 			id := uint(i + 11)

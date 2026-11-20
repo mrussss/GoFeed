@@ -94,6 +94,10 @@ func (f *FeedService) localVideo(id uint) *video.Video {
 	return nil
 }
 
+func (f *FeedService) EvictVideo(id uint) {
+	f.localcache.Delete(f.videoEntityKey(id))
+}
+
 func (f *FeedService) videoEntityKey(id uint) string {
 	return f.rediscache.Key("video:entity:%d", id)
 }
