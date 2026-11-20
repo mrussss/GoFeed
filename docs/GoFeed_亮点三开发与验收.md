@@ -180,3 +180,29 @@ SQL 数量固定为每请求三条，10,000 作者、10 VU 的 MySQL 服务端 S
 
 - Popularity 窄核验 SQL 的吞吐代价在本轮明确可测。建议目前保留，因为 B 在实体缓存失效成功时仍有跨进程 L1 窗口，DEL 失败时还可从旧 Redis Entity 重新进入榜单。正式实现保留 A，最终取舍由审查决定。
 - Following 在 5,000 到 10,000 作者时已出现显著的候选读取和分配开销。在 10,000 作者、10 VU 的 3 轮内无请求错误，P95 中位数为 274.37 ms。先维持现有 Pipeline，是否进一步对照分批取决于目标延迟和内存预算。
+
+## 模块 4 · MySQL 回源保护
+
+### 三档行为
+
+| 行为 | 触发条件 | 请求结果 |
+| --- | --- | --- |
+| Normal | Redis 正常，候选索引或实体缓存可用 | 优先读候选索引、L1 和 Redis。能仅靠缓存满足的读取跳过 SQL 额度。业务必需的关注、存在性和点赞状态查询仍共享额度。 |
+| Degraded | Redis 不可用、超时，或索引与缓存不足 | 继续使用现有 MySQL 回源和混合补齐。每条 SQL 持有一个执行额度，查询结束后立即释放。 |
+| Shed | 执行额度占满，等待队列已满或等待超时 | 返回 `ErrFeedReadOverloaded`，Handler 映射为 HTTP 503，响应仅包含错误字段。 |
+
+### 调用链与预算
+
+`Feed Handler → Feed Service → 缓存及候选选择 → readFeedMySQL → 获取共享额度 → 带查询超时的 Repository → 释放额度 → Feed 组装`。
+
+每进程最多 8 条 Feed SQL 同时执行，额外最多 8 条等待，等待上限 20 ms。拿到额度后，由请求 Context 派生 250 ms 的查询超时。请求取消或查询结束后释放相应的执行与等待额度。查询错误继续沿原有错误路径返回。一个页面需要多条 SQL 时逐条取得额度，Redis 操作、缓存回填和响应组装在额度之外。已有的 Singleflight 仍以发起者的 Context 执行共享查询。
+
+预算覆盖实体批量冷读、Latest 重建及冷热回源、Following 的关系查询与候选核验和补齐、LikesCount、Popularity 排名与存在性核验、Tag、已登录用户的点赞状态。JWT 中间件在 Feed Service 之前执行，认证自身的 MySQL 兜底、其他路由和 Worker 使用各自的现有资源边界。额度为进程内预算，多个 API 进程会分别持有自己的预算。
+
+Latest Redis 候选查询和重建回填调用使用 50 ms 子 Context。运行时 Redis Client 启用 go-redis 的 Context 期限，使已有的 Redis 操作期限在套接字读写阶段生效。该设置也覆盖共享客户端上已有的操作期限。继续沿用现有连接池与配置文件。此前专项压测结果对应启用本模块前的行为，故障下的完整性能对照安排在模块 6。
+
+### 验证
+
+- `TestFeedBackpressureMySQL` 在独立 MySQL 和可关闭、可重启的 miniredis 上验证正常、故障与恢复。故障时暖 L1 实体可用，MySQL 返回完整 Feed。持有 8 个执行额度时，覆盖 Latest、Following、LikesCount、Popularity 和 Tag 的 25 个额外请求全部得到 HTTP 503，未进入 SQL。取消在途请求后，新请求获得释放的额度。Redis 恢复后，已预热的 Latest 恢复为零 SQL。
+- `TestFeedSQLDeadlineReleasesSlot` 验证查询期限与额度回收，`TestRuntimeClientHonorsRedisDeadline` 验证运行时客户端从不响应的 Redis 命令退出。现有 Feed 分页、删除一致性和 Singleflight Leader 取消用例一并通过。
+- 全量 `go test -count=1 ./...`、定向 `go test -race`、`go vet` 和 Git diff 检查通过。并发额度测试在 race 模式另重复五轮，均通过。Worker 的 `TestLikeCommandRelay`、`TestLikeCommandPipeline`、`TestLikeCommandBatchWorker`、`TestFollowingPipeline` 在本轮未设置各自连接变量，按条件跳过。实际 Redis 停止与恢复的压测留在模块 6。

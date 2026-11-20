@@ -25,6 +25,7 @@ type FeedService struct {
 	rediscache   *rediscache.Client
 	localcache   *cache.Cache
 	requestGroup singleflight.Group
+	reads        feedReadBudget
 }
 
 type CachedFeedData struct {
@@ -32,7 +33,7 @@ type CachedFeedData struct {
 }
 
 func NewFeedService(repo *FeedRepository, likeRepo *video.LikeRepository, socialRepo *social.SocialRepository, rediscache *rediscache.Client) *FeedService {
-	return &FeedService{repo: repo, likeRepo: likeRepo, socialRepo: socialRepo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second)}
+	return &FeedService{repo: repo, likeRepo: likeRepo, socialRepo: socialRepo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second), reads: newFeedReadBudget()}
 }
 
 const (
@@ -143,7 +144,9 @@ func (f *FeedService) loadVideoBatch(ctx context.Context, ids []uint) ([]*video.
 	if len(missing) == 0 {
 		return videos, nil
 	}
-	rows, err := f.repo.GetByIDs(ctx, missing)
+	rows, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+		return f.repo.GetByIDs(queryCtx, missing)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +181,7 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, cursor *TimeCur
 
 func (f *FeedService) latestCandidates(ctx context.Context, count int, cursor *TimeCursor) ([]*video.Video, error) {
 	if f.rediscache == nil {
-		return f.repo.ListLatest(ctx, count, cursor)
+		return f.latestFromMySQL(ctx, count, cursor)
 	}
 
 	timelineKey := f.rediscache.Key("feed:global_timeline")
@@ -188,14 +191,16 @@ func (f *FeedService) latestCandidates(ctx context.Context, count int, cursor *T
 		maxScore = strconv.FormatInt(cursor.Time.UnixMilli(), 10)
 		readCount++
 	}
-	members, err := f.rediscache.ZRevRangeByScoreWithScores(ctx, timelineKey, maxScore, int64(readCount))
+	cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	members, err := f.rediscache.ZRevRangeByScoreWithScores(cacheCtx, timelineKey, maxScore, int64(readCount))
+	cancel()
 	if err != nil {
-		return f.repo.ListLatest(ctx, count, cursor)
+		return f.latestFromMySQL(ctx, count, cursor)
 	}
 
 	if len(members) == 0 && cursor == nil {
-		loaded, err, _ := f.requestGroup.Do(f.rediscache.Key("sf:fallback:global_timeline_rebuild"), func() (interface{}, error) {
-			videos, err := f.repo.ListLatest(ctx, 1000, nil)
+		flight := f.requestGroup.DoChan(f.rediscache.Key("sf:fallback:global_timeline_rebuild"), func() (interface{}, error) {
+			videos, err := f.latestFromMySQL(ctx, 1000, nil)
 			if err != nil || len(videos) == 0 {
 				return videos, err
 			}
@@ -203,21 +208,26 @@ func (f *FeedService) latestCandidates(ctx context.Context, count int, cursor *T
 			for _, video := range videos {
 				entries = append(entries, redis.Z{Score: float64(video.CreateTime.UnixMilli()), Member: strconv.FormatUint(uint64(video.ID), 10)})
 			}
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 			defer cancel()
 			_ = f.rediscache.ZAdd(cacheCtx, timelineKey, entries...)
 			return videos, nil
 		})
-		if err != nil {
-			return nil, err
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case result := <-flight:
+			if result.Err != nil {
+				return nil, result.Err
+			}
+			videos := result.Val.([]*video.Video)
+			return videos[:min(len(videos), count)], nil
 		}
-		videos := loaded.([]*video.Video)
-		return videos[:min(len(videos), count)], nil
 	}
 
 	ids, ordered := legacyLatestIDs(members, cursor)
 	if !ordered || len(ids) == 0 {
-		return f.repo.ListLatest(ctx, count, cursor)
+		return f.latestFromMySQL(ctx, count, cursor)
 	}
 	ids = ids[:min(len(ids), count)]
 	videos, err := f.GetVideoByIDs(ctx, ids)
@@ -225,18 +235,24 @@ func (f *FeedService) latestCandidates(ctx context.Context, count int, cursor *T
 		return nil, err
 	}
 	if len(videos) != len(ids) {
-		return f.repo.ListLatest(ctx, count, cursor)
+		return f.latestFromMySQL(ctx, count, cursor)
 	}
 	if len(videos) < count {
 		last := videos[len(videos)-1]
 		coldCursor := &TimeCursor{Time: last.CreateTime, ID: last.ID}
-		cold, err := f.repo.ListLatest(ctx, count-len(videos), coldCursor)
+		cold, err := f.latestFromMySQL(ctx, count-len(videos), coldCursor)
 		if err != nil {
 			return nil, err
 		}
 		videos = append(videos, cold...)
 	}
 	return videos, nil
+}
+
+func (f *FeedService) latestFromMySQL(ctx context.Context, count int, cursor *TimeCursor) ([]*video.Video, error) {
+	return readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+		return f.repo.ListLatest(queryCtx, count, cursor)
+	})
 }
 
 // Redis orders equal scores by string ID on the legacy key. Defer those pages
@@ -278,7 +294,9 @@ func (f *FeedService) buildTimePage(ctx context.Context, videos []*video.Video, 
 
 // 按照点赞数查询视频
 func (f *FeedService) ListLikesCount(ctx context.Context, limit int, cursor *LikesCountCursor, viewerAccountID uint) (ListLikesCountResponse, error) {
-	videos, err := f.repo.ListLikesCountWithCursor(ctx, limit+1, cursor)
+	videos, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+		return f.repo.ListLikesCountWithCursor(queryCtx, limit+1, cursor)
+	})
 	if err != nil {
 		return ListLikesCountResponse{}, err
 	}
@@ -351,7 +369,9 @@ func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf i
 		}
 	}
 
-	videos, err := f.repo.ListByPopularity(ctx, limit+1, latestPopularity, latestBefore, latestIDBefore)
+	videos, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+		return f.repo.ListByPopularity(queryCtx, limit+1, latestPopularity, latestBefore, latestIDBefore)
+	})
 	if err != nil {
 		return ListByPopularityResponse{}, err
 	}
@@ -394,12 +414,7 @@ func (f *FeedService) popularitySnapshotPage(ctx, redisCtx context.Context, key 
 				ids = append(ids, id)
 			}
 		}
-		// The sorted set and entity cache can both outlive a deleted row.
-		existing, err := f.repo.existingVideoIDs(ctx, ids)
-		if err != nil {
-			return nil, offset, err
-		}
-		batch, err := f.GetVideoByIDs(ctx, existing)
+		batch, err := f.loadPopularityCandidates(ctx, ids)
 		if err != nil {
 			return nil, offset, err
 		}
@@ -425,15 +440,35 @@ func (f *FeedService) popularitySnapshotPage(ctx, redisCtx context.Context, key 
 	return videos, nextOffset, nil
 }
 
-func (f *FeedService) buildFeedVideos(ctx context.Context, videos []*video.Video, viewerAccountID uint) ([]FeedVideoItem, error) {
-	feedVideos := make([]FeedVideoItem, 0, len(videos))
-	videoIDs := make([]uint, len(videos))
-	for i, v := range videos {
-		videoIDs[i] = v.ID
+func (f *FeedService) loadPopularityCandidates(ctx context.Context, ids []uint) ([]*video.Video, error) {
+	if len(ids) == 0 {
+		return nil, nil
 	}
-	likedMap, err := f.likeRepo.BatchGetLiked(ctx, videoIDs, viewerAccountID)
+	// The sorted set and entity cache can both outlive a deleted row.
+	existing, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]uint, error) {
+		return f.repo.existingVideoIDs(queryCtx, ids)
+	})
 	if err != nil {
 		return nil, err
+	}
+	return f.GetVideoByIDs(ctx, existing)
+}
+
+func (f *FeedService) buildFeedVideos(ctx context.Context, videos []*video.Video, viewerAccountID uint) ([]FeedVideoItem, error) {
+	feedVideos := make([]FeedVideoItem, 0, len(videos))
+	var likedMap map[uint]bool
+	if viewerAccountID != 0 && len(videos) != 0 {
+		videoIDs := make([]uint, len(videos))
+		for i, v := range videos {
+			videoIDs[i] = v.ID
+		}
+		var err error
+		likedMap, err = readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) (map[uint]bool, error) {
+			return f.likeRepo.BatchGetLiked(queryCtx, videoIDs, viewerAccountID)
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	for _, video := range videos {
 		feedVideos = append(feedVideos, FeedVideoItem{
@@ -462,7 +497,9 @@ func buildOrderedResult(orderedIDs []uint, dataMap map[uint]*video.Video) []*vid
 }
 
 func (f *FeedService) ListByTag(ctx context.Context, tagName string, limit int, viewerAccountID uint) ([]FeedVideoItem, error) {
-	videos, err := f.repo.ListByTag(ctx, tagName, limit)
+	videos, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+		return f.repo.ListByTag(queryCtx, tagName, limit)
+	})
 	if err != nil {
 		return nil, err
 	}

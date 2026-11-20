@@ -848,3 +848,181 @@ func (*deleteFailureHook) ProcessHook(next goredis.ProcessHook) goredis.ProcessH
 		return next(ctx, cmd)
 	}
 }
+
+func TestFeedBackpressureMySQL(t *testing.T) {
+	db := readTestMySQL(t)
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	fixture := []video.Video{{AuthorID: 1, CreateTime: now}, {AuthorID: 1, CreateTime: now.Add(-time.Millisecond)}}
+	if err := db.Create(&fixture).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Delete(&fixture).Error; err != nil {
+			t.Error(err)
+		}
+	})
+
+	server := miniredis.RunT(t)
+	raw := goredis.NewClient(&goredis.Options{Addr: server.Addr(), MaxRetries: -1, ContextTimeoutEnabled: true})
+	t.Cleanup(func() { _ = raw.Close() })
+	cache := rediscache.NewClient(raw, "test-read-budget:")
+	service := NewFeedService(NewFeedRepository(db), video.NewLikeRepository(db), social.NewSocialRepository(db), cache)
+	timeline := cache.Key("feed:global_timeline")
+	for _, row := range fixture {
+		if err := raw.ZAdd(ctx, timeline, goredis.Z{Score: float64(row.CreateTime.UnixMilli()), Member: fmt.Sprint(row.ID)}).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	router := gin.New()
+	h := NewFeedHandler(service)
+	router.POST("/latest", h.ListLatest)
+	router.POST("/likes", h.ListLikesCount)
+	router.POST("/following", func(c *gin.Context) { c.Set("accountID", uint(1)) }, h.ListByFollowing)
+	router.POST("/popular", h.ListByPopularity)
+	router.POST("/tag", h.ListByTag)
+	request := func(requestCtx context.Context, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(requestCtx, http.MethodPost, path, strings.NewReader(`{"limit":1,"tag_name":"test"}`))
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		return res
+	}
+	checkLatest := func(res *httptest.ResponseRecorder) {
+		t.Helper()
+		var page ListLatestResponse
+		if res.Code != http.StatusOK || json.Unmarshal(res.Body.Bytes(), &page) != nil ||
+			len(page.VideoList) != 1 || page.VideoList[0].ID != fixture[0].ID {
+			t.Fatalf("latest got status %d, body %s", res.Code, res.Body)
+		}
+	}
+	checkLatest(request(ctx, "/latest"))
+	server.Close()
+	checkLatest(request(ctx, "/latest"))
+
+	entered := make(chan struct{}, 64)
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	var sqlEntries atomic.Int32
+	if err := db.Callback().Query().Before("gorm:query").Register("test:hold_feed_reads", func(tx *gorm.DB) {
+		sqlEntries.Add(1)
+		entered <- struct{}{}
+		select {
+		case <-release:
+		case <-tx.Statement.Context.Done():
+			_ = tx.AddError(tx.Statement.Context.Err())
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := func(requestCtx context.Context, path string) <-chan *httptest.ResponseRecorder {
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() { done <- request(requestCtx, path) }()
+		return done
+	}
+	waitForQuery := func() {
+		t.Helper()
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("request did not enter its query")
+		}
+	}
+	heldCtx, cancelHeld := context.WithCancel(ctx)
+	defer cancelHeld()
+	held := make([]<-chan *httptest.ResponseRecorder, feedReadConcurrency)
+	held[0] = start(heldCtx, "/latest")
+	for i := 1; i < len(held); i++ {
+		held[i] = start(ctx, "/latest")
+	}
+	for range held {
+		waitForQuery()
+	}
+
+	// A valid L1 hit does not require a SQL slot, even during a Redis outage.
+	rows, err := service.GetVideoByIDs(ctx, []uint{fixture[0].ID})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("L1 hit under pressure: %v, %v", rows, err)
+	}
+
+	var overflow []<-chan *httptest.ResponseRecorder
+	for _, path := range []string{"/latest", "/likes", "/following", "/popular", "/tag"} {
+		for range 5 {
+			overflow = append(overflow, start(ctx, path))
+		}
+	}
+	for _, done := range overflow {
+		select {
+		case res := <-done:
+			if res.Code != http.StatusServiceUnavailable || res.Body.String() != `{"error":"feed read overloaded"}` {
+				t.Fatalf("overload got %d %s", res.Code, res.Body)
+			}
+		case <-ctx.Done():
+			t.Fatal("overloaded request failed to exit")
+		}
+	}
+	if got := sqlEntries.Load(); got != feedReadConcurrency {
+		t.Fatalf("overload started %d SQL operations, want %d", got, feedReadConcurrency)
+	}
+
+	cancelHeld()
+	select {
+	case res := <-held[0]:
+		if !strings.Contains(res.Body.String(), "context canceled") {
+			t.Fatalf("canceled query: %d %s", res.Code, res.Body)
+		}
+	case <-ctx.Done():
+		t.Fatal("the canceled query did not finish")
+	}
+	replacement := start(ctx, "/latest")
+	waitForQuery()
+	if got := sqlEntries.Load(); got != feedReadConcurrency+1 {
+		t.Fatalf("SQL operations after cancellation = %d", got)
+	}
+	close(release)
+	for _, done := range append(held[1:], replacement) {
+		select {
+		case res := <-done:
+			checkLatest(res)
+		case <-ctx.Done():
+			t.Fatal("held query did not complete")
+		}
+	}
+
+	if err := server.Restart(); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Ping(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	before := sqlEntries.Load()
+	checkLatest(request(ctx, "/latest"))
+	if sqlEntries.Load() != before {
+		t.Fatal("warm Latest did not return to the Redis path")
+	}
+}
+
+func TestFeedSQLDeadlineReleasesSlot(t *testing.T) {
+	budget := newFeedReadBudget()
+	started := time.Now()
+	_, err := readFeedMySQL(context.Background(), budget, func(ctx context.Context) (int, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || len(budget.active) != 0 {
+		t.Fatalf("deadline got %v with %d occupied slots", err, len(budget.active))
+	}
+	if elapsed := time.Since(started); elapsed < feedQueryTimeout || elapsed > time.Second {
+		t.Fatalf("observed SQL timeout %v", elapsed)
+	}
+}

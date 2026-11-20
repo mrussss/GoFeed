@@ -4,6 +4,7 @@ import (
 	"errors"
 	"feedsystem_video_go/internal/apierror"
 	"feedsystem_video_go/internal/middleware/jwt"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -37,7 +38,7 @@ func (f *FeedHandler) ListLatest(c *gin.Context) {
 	}
 	feedItems, err := f.service.ListLatest(c.Request.Context(), req.Limit, cursor, viewerAccountID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		writeFeedReadError(c, err)
 		return
 	}
 	feedItems.VideoList = nonNilFeedVideoItems(feedItems.VideoList)
@@ -86,7 +87,7 @@ func (f *FeedHandler) ListLikesCount(c *gin.Context) {
 	}
 	feedItems, err := f.service.ListLikesCount(c.Request.Context(), req.Limit, cursor, viewerAccountID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		writeFeedReadError(c, err)
 		return
 	}
 	feedItems.VideoList = nonNilFeedVideoItems(feedItems.VideoList)
@@ -113,7 +114,7 @@ func (f *FeedHandler) ListByFollowing(c *gin.Context) {
 	}
 	feedItems, err := f.service.ListByFollowing(c.Request.Context(), req.Limit, cursor, viewerAccountID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		writeFeedReadError(c, err)
 		return
 	}
 	feedItems.VideoList = nonNilFeedVideoItems(feedItems.VideoList)
@@ -182,7 +183,7 @@ func (f *FeedHandler) ListByPopularity(c *gin.Context) {
 		latestIDBefore,
 	)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		writeFeedReadError(c, err)
 		return
 	}
 	resp.VideoList = nonNilFeedVideoItems(resp.VideoList)
@@ -215,8 +216,16 @@ func (h *FeedHandler) ListByTag(c *gin.Context) {
 	viewerAccountID, _ := jwt.GetAccountID(c)
 	items, err := h.service.ListByTag(c.Request.Context(), req.TagName, req.Limit, viewerAccountID)
 	if err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		writeFeedReadError(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"video_list": nonNilFeedVideoItems(items)})
+}
+
+func writeFeedReadError(c *gin.Context, err error) {
+	status := apierror.ClassifyHTTPStatus(err)
+	if errors.Is(err, ErrFeedReadOverloaded) {
+		status = http.StatusServiceUnavailable
+	}
+	c.JSON(status, gin.H{"error": err.Error()})
 }

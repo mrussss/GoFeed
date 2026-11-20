@@ -26,9 +26,10 @@ func NewClient(rdb *redis.Client, keyPrefix string) *Client {
 
 func NewFromEnv(cfg *config.RedisConfig) (*Client, error) {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     cfg.Host + ":" + strconv.Itoa(cfg.Port),
-		Password: cfg.Password,
-		DB:       cfg.DB,
+		Addr:                  cfg.Host + ":" + strconv.Itoa(cfg.Port),
+		Password:              cfg.Password,
+		DB:                    cfg.DB,
+		ContextTimeoutEnabled: true,
 	})
 	return &Client{rdb: rdb, keyPrefix: defaultKeyPrefix}, nil
 }

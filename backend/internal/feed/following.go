@@ -21,9 +21,11 @@ func (f *FeedService) followingVideos(ctx context.Context, count int, cursor *Ti
 		return nil, nil
 	}
 	if f.rediscache == nil {
-		return f.repo.ListByFollowing(ctx, count, viewerID, cursor)
+		return f.followingFromMySQL(ctx, count, viewerID, cursor)
 	}
-	authors, err := f.socialRepo.ListFollowedAuthorIDs(ctx, viewerID)
+	authors, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]uint, error) {
+		return f.socialRepo.ListFollowedAuthorIDs(queryCtx, viewerID)
+	})
 	if err != nil || len(authors) == 0 {
 		return nil, err
 	}
@@ -45,7 +47,7 @@ func (f *FeedService) followingVideos(ctx context.Context, count int, cursor *Ti
 	sources, err := f.rediscache.ZRevRangeByLexBatch(cacheCtx, keys, before, int64(count))
 	cancel()
 	if err != nil {
-		return f.repo.ListByFollowing(ctx, count, viewerID, cursor)
+		return f.followingFromMySQL(ctx, count, viewerID, cursor)
 	}
 
 	candidates := mergeFollowingCandidates(sources, count)
@@ -59,11 +61,17 @@ func (f *FeedService) followingVideos(ctx context.Context, count int, cursor *Ti
 
 	// There can be unindexed rows anywhere below the request cursor. Read the
 	// whole DB prefix so a missing recent row can also precede a Redis row.
-	history, err := f.repo.ListByFollowing(ctx, count, viewerID, cursor)
+	history, err := f.followingFromMySQL(ctx, count, viewerID, cursor)
 	if err != nil {
 		return nil, err
 	}
 	return mergeFollowingVideos(videos, history, count), nil
+}
+
+func (f *FeedService) followingFromMySQL(ctx context.Context, count int, viewerID uint, cursor *TimeCursor) ([]*video.Video, error) {
+	return readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+		return f.repo.ListByFollowing(queryCtx, count, viewerID, cursor)
+	})
 }
 
 func (f *FeedService) loadFollowingCandidates(ctx context.Context, viewerID uint, candidates []TimeCursor) ([]*video.Video, error) {
@@ -76,7 +84,9 @@ func (f *FeedService) loadFollowingCandidates(ctx context.Context, viewerID uint
 	}
 	// Cached entities can outlive deletion. Check existence, the current
 	// follow relation and the indexed timestamp using just two columns.
-	times, err := f.repo.followingCandidateTimes(ctx, viewerID, ids)
+	times, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) (map[uint]int64, error) {
+		return f.repo.followingCandidateTimes(queryCtx, viewerID, ids)
+	})
 	if err != nil {
 		return nil, err
 	}
