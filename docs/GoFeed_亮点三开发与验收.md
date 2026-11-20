@@ -231,3 +231,93 @@ Popularity 的新分钟键为 `hot:video:1m:v2:<UTC分钟>`，快照键为 `hot:
 - `TestReadPaginationMySQL` 验证旧时间线保持原样、从空新版 Key 重建、同毫秒三页连续读取、暖缓存同毫秒翻页无需 SQL、稀疏 Redis 时间线补进更靠前的 MySQL 视频、LikesCount 同分精确末页与 Popularity 三字段回退。快照测试覆盖同分数字 ID 10 和 9、无效及已删除候选、原始位置偏移和 L2 实体组装。
 - `TestPopularityCacheWriter` 验证新版分钟桶、固定宽度 Member 和 2 小时桶 TTL。`TestVideoDeleteFeedCachesMySQL` 验证新版时间线精确删除及缓存失效失败边界。
 - 在独立 MySQL、Redis、RabbitMQ 及各测试专用 vhost 上运行 `go test -count=1 -p 1 -v ./...`，全部通过，含真实 HTTP 发布到 Worker 写新版时间线、旧数据的删除清理、Following 分发与点赞回归。定向 Feed 与 Redis `go test -race`、全量 `go vet ./...`、前端 `npm run build` 和 Git diff 检查通过。
+
+## 模块 6 · 最终验收
+
+### 业务目标与最终调用链
+
+亮点三解决关注流候选读写脱节、同时间或同分分页、逐视频 SQL 回源，以及 Redis 故障时数据库读并发失控。模块 0 冻结读取基线，模块 1 定义游标，模块 2 接通混合候选，模块 3 批量组装并回填，专项审查补齐删除失效，模块 4 管理读取预算，模块 5 完成版本化索引和榜单分页，本模块复核完整链路和实验结果。
+
+```text
+Following HTTP + JWT
+  → 查询当前关注作者 ID
+  → Pipeline 读 Inbox 和所有关注作者的 Outbox，每路最多 limit+1
+  → 最大堆按各路队首归并并按 VideoID 去重
+  → MySQL 核验当前关注关系、候选存在性和发布时间
+  → L1 → 一次 Redis MGET → 相同缺失集合 Singleflight → 有界 MySQL IN
+  → 候选不足时与原游标的 MySQL 结果归并
+  → 按页面顺序生成卡片，登录用户用 BatchGetLiked 批查点赞
+  → 返回下一页游标
+```
+
+每路候选已经有序，最大堆只保存各来源当前位置，弹出全局最新的成员后仅推进对应来源。Latest 复用同一时间与 ID 排序，通过新版全局时间线查热数据并按需合并 MySQL。LikesCount 保留点赞数与 ID 作为排序元组，Popularity 保留 Redis 热榜快照与 MySQL 热度、时间、ID 游标。共用的 DB 预算按单条 Feed SQL 计费，并发 8，等待队列 8，入场等待最多 20 ms，单查询期限 250 ms，预算耗尽返回 503。认证的数据库兜底发生在此预算之前。
+
+### 对照口径
+
+对照使用 `c628b0f` 与功能代码 `25ea6b5`。两份临时构建使用同一 Go 工具链、同一宿主机，各自仅增加等同的回环 `sql.DB.Stats` 采样端点。端点和压测控制代码保留在本地实验材料，生产代码未接入。隔离环境使用 MySQL 8.0.46、Redis 7.4.11、k6 2.4.0。同一个新 Schema `gofeed_read_acceptance` 复用模块 0 合成数据，包含 1,000 个账号、10,000 个视频、20,000 条关注、100,000 条点赞。Following 使用同一个关注 50 位作者的账号。
+
+旧版和新版有各自独立的 Redis DB 10、11。Latest、Popularity 对两版预置相同候选 ID，按各版格式编码。新版 Following 预置对应 Inbox 与完整可用的作者候选，旧版按原有机制生成整页缓存。每轮均从新进程开始，两次预检核对返回的实际 Top 10，并预热各版本实际使用的读取路径。请求使用同样的首屏参数。每版每场景三轮，轮换版本顺序，10 VU、配置 20 秒，采用现有 k6 固定并发模型。Redis 停启实验在同一进程内验证 Redis 连接恢复，正常、停机和恢复均为 10 VU、6 秒，过载阶段以 32 VU 施压 6 秒，并在每轮开头短时持有隔离 Schema 的视频表写锁。
+
+延迟为每轮各分位数的轮间中位数，包含该轮错误请求；有效吞吐为 k6 总 RPS 乘请求成功率。SQL 数量用专用实例的 `Com_stmt_execute` 增量核对，原始 `Com_select` 也保留用于交叉核验。活跃连接峰值是 50 ms 周期采样到的 API MySQL 连接池 `InUse` 最大值，连接池等待取 `WaitDuration` 增量。数据库内部另从 Performance Schema 记录 MDL 等待。Redis 内存通过 `MEMORY USAGE` 对各实验 DB 的键按索引分类求和。原始 k6 汇总、每轮计数与配置见 [模块 6 本地原始记录](../data/feed-read-reliability/module6/)。
+
+### 正常 Redis 下的四场景对照
+
+| 场景 | 版本 | 轮数 | P50 ms | P95 ms | P99 ms | 有效 RPS | 请求错误率 | SQL / 请求 | 活跃连接峰值 | 连接池等待 ms / 轮 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Latest | before | 3 | 1.736 | 2.427 | 2.841 | 5,103.37 | 0.00% | 0.000 | 0 | 0.000 |
+| Latest | after | 3 | 1.194 | 1.860 | 2.275 | 7,029.61 | 0.00% | 0.000 | 0 | 0.000 |
+| Following | before | 3 | 4.330 | 7.411 | 8.328 | 1,935.17 | 0.00% | 1.000 | 10 | 0.000 |
+| Following | after | 3 | 9.525 | 16.575 | 20.159 | 926.45 | 0.00% | 3.000 | 8 | 0.000 |
+| LikesCount | before | 3 | 8.125 | 11.409 | 12.810 | 1,142.56 | 0.00% | 1.000 | 10 | 0.000 |
+| LikesCount | after | 3 | 7.801 | 11.280 | 12.825 | 1,202.66 | 0.00% | 1.000 | 8 | 0.000 |
+| PopularityHot | before | 3 | 4.107 | 9.513 | 14.215 | 1,782.19 | 0.02% | 1.000 | 10 | 0.000 |
+| PopularityHot | after | 3 | 3.960 | 10.920 | 13.223 | 1,858.00 | 0.00% | 1.000 | 8 | 0.000 |
+
+Latest 暖读维持零 SQL，中位有效吞吐从 5,103 升到 7,030 RPS。Following 由旧整页缓存的一条点赞 SQL 变为关注作者查询、候选核验和点赞三条 SQL。50 位作者条件下有效吞吐由 1,935 降到 926 RPS，P95 从 7.41 升到 16.58 ms，代价对应当前关注和删除语义。LikesCount 查询量相同，采样活跃连接峰值从 10 降至 8。Popularity 的 SQL 仍为每请求一条，执行内容从完整实体查询变为窄存在性核验，暖详情由缓存提供。本轮中位吞吐从 1,782 升到 1,858 RPS，P95 从 9.51 升到 10.92 ms。
+
+轮间中位错误率为零的项目仍可能有非零轮次。Following 基线有 8 个 HTTP 500，新版有 159 个 HTTP 500 集中在一轮（0.903%），同期 MySQL 驱动日志出现 `unexpected EOF`。Popularity 基线有 36 个 HTTP 200 未满足热榜快照响应契约，新版有一轮 88 个 HTTP 500（0.209%），捕获的响应体为 `driver: bad connection`。这些轮次均计入结果。该观察属于验收中的已知风险，后续诊断与正式代码取舍见下文。
+
+| Redis 暖场景索引键 | 基线字节 | 新版字节 |
+| --- | ---: | ---: |
+| Latest 全局时间线 | 81,008 | 116,208 |
+| Following 整页缓存 / Inbox 与 Outbox | 3,176 | 26,512 |
+| Popularity 快照 | 89,016 | 100,224 |
+| 其余预热键 | 4,832 | 11,744 |
+
+口径为一次按相同场景预热后逐键查询的 Redis 用量，旧版 Following 对应单用户的一页，新版对应该用户的 Inbox 和已预置作者候选范围。实体缓存与认证键归入其余预热键，共享 Redis 实例的总分配不用于版本比较。
+
+### 真实 Redis 停启与 MySQL 过载注入
+
+| 场景 | VU | 轮数 | P50 ms | P95 ms | P99 ms | 有效 RPS | 请求错误率 | 503 | 500 | SQL / 请求 | 活跃连接峰值 | 连接池等待 ms / 轮 | MDL 等待 ms / 请求 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Redis 正常 | 10 | 3 | 1.209 | 1.906 | 2.309 | 6,907.47 | 0.00% | 0.00% | 0.00% | 0.000 | 0 | 0.000 | 0.000 |
+| Redis 停机 | 10 | 3 | 54.700 | 56.321 | 58.567 | 181.69 | 0.00% | 0.00% | 0.00% | 1.000 | 5 | 0.000 | 0.000 |
+| Redis 停机加表锁 | 32 | 3 | 55.278 | 71.625 | 301.486 | 437.44 | 17.43% | 16.18% | 1.25% | 0.838 | 8 | 0.000 | 11.835 |
+| Redis 恢复 | 10 | 3 | 1.128 | 1.664 | 2.130 | 7,307.59 | 0.00% | 0.00% | 0.00% | 0.000 | 4 | 0.000 | 0.000 |
+
+停止模块专用 Redis 后，API 保持同一进程。10 VU 下 Latest 全部有效回源，P95 从 1.91 ms 升到 56.32 ms，包含候选读取的 Redis 超时。32 VU 的每轮开头持有视频表写锁约 1.5 秒，HTTP 503 为额度不足，少量 HTTP 500 对应已取得额度的查询到达执行期限。活跃连接峰值为 8。MDL 等待是服务端各并发查询等待的累计用时，Go 连接池等待保持 0。重启 Redis 后三轮均无错误，P95 回到约 1.66 ms。首轮有 105 次过渡回源，后两轮暖读 SQL 为零。此实验覆盖 Redis 在 API 运行期间中断并恢复。
+
+### 已知边界
+
+- Following 当前索引覆盖有限，候选足够时，未索引历史可能越过分页边界。大关注规模的 Pipeline 构造、传输和解码成本已在专项审查测出，当前继续使用单次 Pipeline。
+- LikesCount 在并发点赞时允许跨页位置移动。Popularity 快照按固定分钟和偏移分页，快照到期、重建或回退时存在排名变化。存在性 SQL 保留。
+- 删除在 Redis 失效失败、跨进程暖 L1 或延迟发布重加索引成员时，保留专项审查记录的一致性边界。用户点赞状态每页批查，卡片点赞数允许 L1 TTL 内短时陈旧。
+- Feed 读预算按进程和单条查询计。认证兜底及其他业务仍有独立数据库负载。API 启动时 Redis 连通性检查失败会禁用缓存，本轮验证的自动恢复起点为已启用 Redis 的运行中 API。
+
+### 暖负载 MySQL 连接异常诊断
+
+为检查连接周转成本，使用同一新版代码和 Following 配置另跑一组诊断。默认池与临时设为 8 个空闲连接的构建各一轮，均未复现 HTTP 500。默认池一轮新连接计数增加 12,663，因空闲额度关闭 12,655 条连接，P95 为 13.93 ms。临时构建连接计数增加 15，空闲额度关闭数为 0，P95 为 10.20 ms。两组均未观测到 MySQL 拒绝连接或异常断连计数增加。本组表明空闲连接设置显著影响连接周转，本轮样本无法确认它与主对照中的间歇性 EOF 存在因果关系。保留主对照全部结果和当前正式连接池参数。
+
+### 测试覆盖与改动审查
+
+| 验收点 | 主要测试 |
+| --- | --- |
+| 同毫秒三页、严格游标、翻页期间插入、Redis 与 MySQL 排序一致、LikesCount 同分、Popularity 快照与删除项 | `TestReadPaginationMySQL`、`TestFollowingMemberLexPage`、`TestTimeFeedRejectsInvalidCursor` |
+| Inbox 与 Outbox、去重、取关、删除、候选不足补齐及 Redis 不可用 | `TestFollowingHybridMySQL`、`TestFollowingPipeline` |
+| 三级缓存、批量 SQL、原顺序和错误传播、Singleflight Leader 与等待者取消 | `TestVideoLookupBatchMySQL`、`TestVideoLookupSingleflightMySQL`、`TestVideoLookupLeaderCancellationMySQL` |
+| 预算、HTTP 503、请求取消、资源释放和恢复 | `TestFeedBackpressureMySQL`、`TestFeedSQLDeadlineReleasesSlot`、`TestRuntimeClientHonorsRedisDeadline` |
+| 发布到新版时间线、精确删除、延迟发布、实时点赞 | `TestPublishFollowingMySQL`、`TestVideoDeleteFeedCachesMySQL`、`TestFollowingPipeline`、`TestLikeCommandPipeline` |
+
+累计差异核对了四条 Feed 路径、前端请求与响应、Redis 索引编码、删除失效及共享 Redis 的期限选项。依赖清单和业务 Schema 无差异，Following 写入分发和点赞命令处理沿用原有流程。模块 6 的仓库内改动集中在本验收文档，压测和诊断源码只存于上面的本地实验目录及临时构建目录。
+
+在独立 MySQL、Redis、RabbitMQ 及各测试专用 vhost 上完成全量 `go test -count=1 -p 1 -v ./...` 和 `go test -race -count=1 -p 1 -v ./...`，均通过，无跳过。全量 `go vet ./...`、前端 `npm run build` 和 Git diff 空白检查通过。36 轮主实验与 2 轮辅助诊断均保留原始记录。模块 6 提交后由用户确认是否推送。
