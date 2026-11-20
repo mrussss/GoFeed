@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -236,8 +239,16 @@ func TestReadPaginationMySQL(t *testing.T) {
 		).Err(); err != nil {
 			t.Fatal(err)
 		}
+		cachedRank := video.Video{ID: 19, AuthorID: author, CreateTime: at, Title: "cached ranking entity"}
+		payload, err := json.Marshal(cachedRank)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cache.SetBytes(ctx, service.videoEntityKey(cachedRank.ID), payload, videoRedisTTL); err != nil {
+			t.Fatal(err)
+		}
 		rank, err := service.ListByPopularity(ctx, 2, minute.Unix(), 0, 0, 0, time.Time{}, 0)
-		if err != nil || !rank.HasMore || rank.NextOffset != 2 || !reflect.DeepEqual(feedIDs(rank.VideoList), []uint{19, 12}) {
+		if err != nil || !rank.HasMore || rank.NextOffset != 2 || !reflect.DeepEqual(feedIDs(rank.VideoList), []uint{19, 12}) || rank.VideoList[0].Title != cachedRank.Title {
 			t.Fatalf("first snapshot page = %+v, %v", rank, err)
 		}
 		rank, err = service.ListByPopularity(ctx, 2, minute.Unix(), rank.NextOffset, 0, 0, time.Time{}, 0)
@@ -287,19 +298,16 @@ func TestFollowingHybridMySQL(t *testing.T) {
 		if err := tx.Create(&videos).Error; err != nil {
 			t.Fatal(err)
 		}
-		// Keep entity reads on Redis so the existing per-ID DB goroutines do
-		// not concurrently use this fixture's single transaction connection.
-		for _, row := range videos {
-			if row.ID == 100 {
-				row.Title = "indexed entity cache"
-			}
-			payload, err := json.Marshal(row)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := cache.SetBytes(ctx, cache.Key("video:entity:%d", row.ID), payload, time.Minute); err != nil {
-				t.Fatal(err)
-			}
+		// A cached title lets the test distinguish the indexed candidate from
+		// the same video returned by the history query during a merge.
+		indexed := videos[2]
+		indexed.Title = "indexed entity cache"
+		payload, err := json.Marshal(indexed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cache.SetBytes(ctx, cache.Key("video:entity:%d", indexed.ID), payload, time.Minute); err != nil {
+			t.Fatal(err)
 		}
 		links := []social.Social{{FollowerID: viewer, VloggerID: authorPush}, {FollowerID: viewer, VloggerID: authorPull}, {FollowerID: viewer, VloggerID: other}}
 		if err := tx.Create(&links).Error; err != nil {
@@ -391,4 +399,224 @@ func TestFollowingHybridMySQL(t *testing.T) {
 	if !errors.Is(err, rollback) {
 		t.Fatal(err)
 	}
+}
+
+func TestVideoLookupBatchMySQL(t *testing.T) {
+	ctx := context.Background()
+	db := readTestMySQL(t)
+	rollback := errors.New("rollback entity fixture")
+	err := db.Transaction(func(tx *gorm.DB) error {
+		cache, raw := readTestRedis(t)
+		service := NewFeedService(NewFeedRepository(tx), nil, nil, cache)
+		var fixture []video.Video
+		for _, id := range []uint{2, 4, 6, 8, 9, 10} {
+			fixture = append(fixture, video.Video{ID: id, AuthorID: 1})
+		}
+		if err := tx.Create(&fixture).Error; err != nil {
+			t.Fatal(err)
+		}
+		service.localcache.Set(service.videoEntityKey(2), fixture[0], videoLocalTTL)
+		for id, value := range map[uint]string{4: `{"id":4}`, 6: `{"id":404}`} {
+			if err := cache.SetBytes(ctx, service.videoEntityKey(id), []byte(value), time.Minute); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		var redisCalls videoRedisCalls
+		raw.AddHook(&redisCalls)
+		var queryArgs [][]interface{}
+		var failQuery atomic.Bool
+		dbError := errors.New("entity query failed")
+		queries := tx.Callback().Query()
+		if err := queries.Before("gorm:query").Register("test:fail_video_read", func(db *gorm.DB) {
+			if db.Statement.Table == "videos" && failQuery.Load() {
+				_ = db.AddError(dbError)
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := queries.After("gorm:query").Register("test:record_video_read", func(db *gorm.DB) {
+			if db.Statement.Table == "videos" && db.Error == nil {
+				queryArgs = append(queryArgs, append([]interface{}(nil), db.Statement.Vars...))
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		check := func(s *FeedService, input, expected []uint) {
+			t.Helper()
+			rows, err := s.GetVideoByIDs(ctx, input)
+			var ids []uint
+			for _, row := range rows {
+				ids = append(ids, row.ID)
+			}
+			if err != nil || !reflect.DeepEqual(ids, expected) {
+				t.Fatalf("lookup %v = %v, %v; want %v", input, ids, err, expected)
+			}
+		}
+
+		check(service, []uint{8, 4, 2, 6, 8, 99}, []uint{8, 4, 2, 6, 8})
+		wantSQL := [][]interface{}{{uint(6), uint(8), uint(99)}}
+		if !reflect.DeepEqual(queryArgs, wantSQL) {
+			t.Fatalf("SQL args = %v, want one batch %v", queryArgs, wantSQL)
+		}
+		if redisCalls.mgets.Load() != 1 || redisCalls.pipelines.Load() != 1 || redisCalls.sets.Load() != 2 {
+			t.Fatalf("Redis counts MGET=%d pipelines=%d SET=%d", redisCalls.mgets.Load(), redisCalls.pipelines.Load(), redisCalls.sets.Load())
+		}
+		for _, id := range []uint{6, 8} {
+			if ttl := raw.TTL(ctx, service.videoEntityKey(id)).Val(); ttl != videoRedisTTL {
+				t.Fatalf("Redis TTL for %d = %s", id, ttl)
+			}
+		}
+		if raw.Exists(ctx, service.videoEntityKey(99)).Val() != 0 {
+			t.Fatal("missing video was cached")
+		}
+
+		check(service, []uint{6, 4, 2, 8}, []uint{6, 4, 2, 8})
+		if len(queryArgs) != 1 || redisCalls.mgets.Load() != 1 {
+			t.Fatal("a complete L1 hit used a remote lookup")
+		}
+		fresh := NewFeedService(service.repo, nil, nil, cache)
+		check(fresh, []uint{8, 4, 6}, []uint{8, 4, 6})
+		if len(queryArgs) != 1 || redisCalls.mgets.Load() != 2 {
+			t.Fatal("a complete Redis hit queried MySQL or used multiple MGETs")
+		}
+
+		if err := raw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		check(fresh, []uint{10, 9}, []uint{10, 9})
+		if len(queryArgs) != 2 || !reflect.DeepEqual(queryArgs[1], []interface{}{uint(9), uint(10)}) {
+			t.Fatalf("Redis failure did not use one SQL batch: %v", queryArgs)
+		}
+
+		failQuery.Store(true)
+		rows, err := fresh.GetVideoByIDs(ctx, []uint{10, 2})
+		if rows != nil || !errors.Is(err, dbError) {
+			t.Fatalf("failed SQL lookup returned %v, %v", rows, err)
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatal(err)
+	}
+}
+
+type videoRedisCalls struct {
+	mgets, pipelines, sets atomic.Int32
+}
+
+func (*videoRedisCalls) DialHook(next goredis.DialHook) goredis.DialHook {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return next(ctx, network, addr)
+	}
+}
+
+func (c *videoRedisCalls) ProcessHook(next goredis.ProcessHook) goredis.ProcessHook {
+	return func(ctx context.Context, cmd goredis.Cmder) error {
+		if cmd.Name() == "mget" {
+			c.mgets.Add(1)
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (c *videoRedisCalls) ProcessPipelineHook(next goredis.ProcessPipelineHook) goredis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []goredis.Cmder) error {
+		for _, cmd := range cmds {
+			if cmd.Name() == "set" {
+				c.sets.Add(1)
+			}
+		}
+		if len(cmds) > 0 && cmds[0].Name() == "set" {
+			c.pipelines.Add(1)
+		}
+		return next(ctx, cmds)
+	}
+}
+
+func TestVideoLookupSingleflightMySQL(t *testing.T) {
+	db := readTestMySQL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rollback := errors.New("rollback flight fixture")
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&[]video.Video{{ID: 7, AuthorID: 1}, {ID: 9, AuthorID: 1}}).Error; err != nil {
+			t.Fatal(err)
+		}
+		service := NewFeedService(NewFeedRepository(tx), nil, nil, nil)
+		queryStarted, release := make(chan struct{}), make(chan struct{})
+		var queries atomic.Int32
+		if err := tx.Callback().Query().Before("gorm:query").Register("test:hold_entity_query", func(db *gorm.DB) {
+			if db.Statement.Table == "videos" {
+				if queries.Add(1) == 1 {
+					close(queryStarted)
+				}
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		type lookupResult struct {
+			ids []uint
+			err error
+		}
+		lookup := func(requestCtx context.Context, input []uint, result chan<- lookupResult) {
+			rows, err := service.GetVideoByIDs(requestCtx, input)
+			var ids []uint
+			for _, row := range rows {
+				ids = append(ids, row.ID)
+			}
+			result <- lookupResult{ids, err}
+		}
+		wait := func(ready <-chan struct{}) {
+			t.Helper()
+			select {
+			case <-ready:
+			case <-ctx.Done():
+				t.Fatal("lookup did not reach the expected phase")
+			}
+		}
+		first, second, canceled := make(chan lookupResult, 1), make(chan lookupResult, 1), make(chan lookupResult, 1)
+		go lookup(ctx, []uint{9, 7, 99}, first)
+		wait(queryStarted)
+		waiter := &flightWaitContext{Context: ctx, entered: make(chan struct{})}
+		go lookup(waiter, []uint{99, 7, 9, 7}, second)
+		wait(waiter.entered)
+
+		cancelCtx, cancelWaiter := context.WithCancel(ctx)
+		defer cancelWaiter()
+		leaving := &flightWaitContext{Context: cancelCtx, entered: make(chan struct{})}
+		go lookup(leaving, []uint{7, 99, 9}, canceled)
+		wait(leaving.entered)
+		cancelWaiter()
+		if got := <-canceled; !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("canceled waiter returned %+v", got)
+		}
+		close(release)
+		gotFirst, gotSecond := <-first, <-second
+		if gotFirst.err != nil || gotSecond.err != nil || !reflect.DeepEqual(gotFirst.ids, []uint{9, 7}) ||
+			!reflect.DeepEqual(gotSecond.ids, []uint{7, 9, 7}) || queries.Load() != 1 {
+			t.Fatalf("singleflight first=%+v second=%+v queries=%d", gotFirst, gotSecond, queries.Load())
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatal(err)
+	}
+}
+
+type flightWaitContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (ctx *flightWaitContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.entered) })
+	return ctx.Context.Done()
 }

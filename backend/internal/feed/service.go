@@ -3,12 +3,14 @@ package feed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 	"feedsystem_video_go/internal/social"
 	"feedsystem_video_go/internal/video"
+	"fmt"
 	"log"
+	"slices"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/patrickmn/go-cache"
@@ -33,116 +35,133 @@ func NewFeedService(repo *FeedRepository, likeRepo *video.LikeRepository, social
 	return &FeedService{repo: repo, likeRepo: likeRepo, socialRepo: socialRepo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second)}
 }
 
+const (
+	videoLocalTTL = 5 * time.Second
+	videoRedisTTL = 60 * time.Second
+)
+
 func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*video.Video, error) {
-	// GetVideoByIDs 批量获取视频信息
-	// 采用 L1(本地缓存) -> L2(Redis) -> L3(MySQL) 三级架构
-	if len(videoIDs) == 0 {
-		return []*video.Video{}, nil
-	}
-
-	videoMap := make(map[uint]*video.Video)
-	//L1:本地缓存
-	var missedL1 []uint
+	videos := make(map[uint]*video.Video, len(videoIDs))
+	seen := make(map[uint]struct{}, len(videoIDs))
+	var missing []uint
 	for _, id := range videoIDs {
-		cacheKey := f.rediscache.Key("video:entity:%d", id)
-		if f.localcache != nil {
-			if v, found := f.localcache.Get(cacheKey); found {
-				if data, ok := v.(video.Video); ok {
-					videoMap[id] = &data
-					continue
-				}
-			}
+		if _, ok := seen[id]; id == 0 || ok {
+			continue
 		}
-		// 记录未命中的 ID，准备进入下一级缓存
-		missedL1 = append(missedL1, id)
-	}
-
-	if len(missedL1) == 0 {
-		return buildOrderedResult(videoIDs, videoMap), nil
-	}
-
-	//L2:redis
-	var missedL2 []uint
-	if len(missedL1) > 0 {
-		cacheKeys := make([]string, len(missedL1))
-		for i, id := range missedL1 {
-			cacheKeys[i] = f.rediscache.Key("video:entity:%d", id)
-		}
-
-		cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-		results, err := f.rediscache.MGet(cacheCtx, cacheKeys...)
-		cancel()
-
-		if err == nil {
-			for i, res := range results {
-				id := missedL1[i]
-				if res != nil {
-					if str, ok := res.(string); ok {
-						var v video.Video
-						if err := json.Unmarshal([]byte(str), &v); err == nil {
-							videoMap[id] = &v
-							// 回写更新 L1 本地缓存
-							if f.localcache != nil {
-								f.localcache.Set(cacheKeys[i], v, 5*time.Second)
-							}
-							continue
-						}
-					}
-				}
-				missedL2 = append(missedL2, id)
-			}
+		seen[id] = struct{}{}
+		if v := f.localVideo(id); v != nil {
+			videos[id] = v
 		} else {
-			// 如果 Redis 挂了或者超时了，全部降级到 L3
-			missedL2 = missedL1
-			log.Printf("L2 Redis MGet 失败，全部降级到 MySQL: %v", err)
+			missing = append(missing, id)
 		}
 	}
-
-	if len(missedL2) == 0 {
-		return buildOrderedResult(videoIDs, videoMap), nil
+	if len(missing) == 0 {
+		return buildOrderedResult(videoIDs, videos), nil
 	}
 
-	//L3:MySQL
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	for _, id := range missedL2 {
-		wg.Add(1)
-		go func(videoID uint) {
-			defer wg.Done()
-			sfKey := f.rediscache.Key("sf:entity:%d", videoID)
-
-			v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
-				videoList, err := f.repo.GetByIDs(ctx, []uint{videoID})
-
-				if err != nil || len(videoList) == 0 {
-					return nil, err
-				}
-
-				safeCopy := *videoList[0]
-				cachekey := f.rediscache.Key("video:entity:%d", safeCopy.ID)
-				if b, err := json.Marshal(safeCopy); err == nil {
-					//异步回写redis
-					go func(k string, b []byte) {
-						setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-						defer setCancel()
-
-						f.rediscache.SetBytes(setCtx, k, b, 60*time.Second)
-					}(cachekey, b)
-				}
-				return videoList[0], err
-			})
-
-			if err == nil && v != nil {
-				safeCopy := *(v.(*video.Video))
-				mu.Lock()
-				videoMap[id] = &safeCopy
-				mu.Unlock()
-				f.localcache.Set(f.rediscache.Key("video:entity:%d", safeCopy.ID), safeCopy, 5*time.Second)
+	if f.rediscache != nil {
+		missing = f.readRedisVideos(ctx, missing, videos)
+	}
+	if len(missing) > 0 {
+		// A set of IDs identifies the flight independently of request order.
+		slices.Sort(missing)
+		key := fmt.Sprint("sf:entities:", missing)
+		flight := f.requestGroup.DoChan(key, func() (interface{}, error) {
+			return f.loadVideoBatch(ctx, missing)
+		})
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case result := <-flight:
+			if result.Err != nil {
+				return nil, result.Err
 			}
-		}(id)
+			for _, v := range result.Val.([]*video.Video) {
+				copied := *v
+				videos[v.ID] = &copied
+			}
+		}
 	}
-	wg.Wait()
-	return buildOrderedResult(videoIDs, videoMap), nil
+	return buildOrderedResult(videoIDs, videos), nil
+}
+
+func (f *FeedService) localVideo(id uint) *video.Video {
+	if entry, ok := f.localcache.Get(f.videoEntityKey(id)); ok {
+		if v, ok := entry.(video.Video); ok {
+			return &v
+		}
+	}
+	return nil
+}
+
+func (f *FeedService) videoEntityKey(id uint) string {
+	return f.rediscache.Key("video:entity:%d", id)
+}
+
+func (f *FeedService) readRedisVideos(ctx context.Context, ids []uint, videos map[uint]*video.Video) []uint {
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = f.videoEntityKey(id)
+	}
+	cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	results, err := f.rediscache.MGet(cacheCtx, keys...)
+	cancel()
+	if err != nil {
+		log.Printf("feed video MGET failed: %v", err)
+		return ids
+	}
+
+	missing := ids[:0]
+	for i, entry := range results {
+		id := ids[i]
+		var v video.Video
+		if payload, ok := entry.(string); ok && json.Unmarshal([]byte(payload), &v) == nil && v.ID == id {
+			f.localcache.Set(keys[i], v, videoLocalTTL)
+			videos[id] = &v
+		} else {
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}
+
+func (f *FeedService) loadVideoBatch(ctx context.Context, ids []uint) ([]*video.Video, error) {
+	videos := make([]*video.Video, 0, len(ids))
+	missing := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		// A prior flight may have completed since this request checked L1.
+		if v := f.localVideo(id); v != nil {
+			videos = append(videos, v)
+		} else {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return videos, nil
+	}
+	rows, err := f.repo.GetByIDs(ctx, missing)
+	if err != nil {
+		return nil, err
+	}
+
+	values := make(map[string][]byte, len(rows))
+	for _, v := range rows {
+		key := f.videoEntityKey(v.ID)
+		f.localcache.Set(key, *v, videoLocalTTL)
+		if f.rediscache != nil {
+			if payload, err := json.Marshal(v); err == nil {
+				values[key] = payload
+			}
+		}
+	}
+	if len(values) > 0 {
+		cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		if err := f.rediscache.SetBytesBatch(cacheCtx, values, videoRedisTTL); err != nil {
+			log.Printf("feed video cache fill failed: %v", err)
+		}
+	}
+	return append(videos, rows...), nil
 }
 
 func (f *FeedService) ListLatest(ctx context.Context, limit int, cursor *TimeCursor, viewerAccountID uint) (ListLatestResponse, error) {
@@ -279,6 +298,8 @@ func (f *FeedService) ListLikesCount(ctx context.Context, limit int, cursor *Lik
 	return resp, nil
 }
 
+var errPopularitySnapshotUnavailable = errors.New("popularity snapshot unavailable")
+
 func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf int64, offset int, viewerAccountID uint, latestPopularity int64, latestBefore time.Time, latestIDBefore uint) (ListByPopularityResponse, error) {
 	// Redis 热榜（稳定分页：as_of + offset）
 	// Continue a MySQL page with its cursor even if Redis has recovered.
@@ -305,6 +326,9 @@ func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf i
 		}
 
 		videos, nextOffset, err := f.popularitySnapshotPage(ctx, opCtx, dest, offset, limit)
+		if err != nil && !errors.Is(err, errPopularitySnapshotUnavailable) {
+			return ListByPopularityResponse{}, err
+		}
 		if err == nil && (len(videos) != 0 || offset > 0) {
 			hasMore := len(videos) > limit
 			videos = videos[:min(len(videos), limit)]
@@ -355,15 +379,23 @@ func (f *FeedService) popularitySnapshotPage(ctx, redisCtx context.Context, key 
 		stop := start + batchSize - 1
 		members, err := f.rediscache.ZRevRange(redisCtx, key, start, stop)
 		if err != nil {
-			return nil, offset, err
+			return nil, offset, fmt.Errorf("%w: %w", errPopularitySnapshotUnavailable, err)
 		}
-		ids := make([]uint, len(members))
+		idsByRank := make([]uint, len(members))
+		ids := make([]uint, 0, len(members))
 		for i, member := range members {
-			if id, err := strconv.ParseUint(member, 10, strconv.IntSize); err == nil {
-				ids[i] = uint(id)
+			if parsed, err := strconv.ParseUint(member, 10, strconv.IntSize); err == nil && parsed != 0 {
+				id := uint(parsed)
+				idsByRank[i] = id
+				ids = append(ids, id)
 			}
 		}
-		batch, err := f.repo.GetByIDs(ctx, ids)
+		// The sorted set and entity cache can both outlive a deleted row.
+		existing, err := f.repo.existingVideoIDs(ctx, ids)
+		if err != nil {
+			return nil, offset, err
+		}
+		batch, err := f.GetVideoByIDs(ctx, existing)
 		if err != nil {
 			return nil, offset, err
 		}
@@ -371,7 +403,7 @@ func (f *FeedService) popularitySnapshotPage(ctx, redisCtx context.Context, key 
 		for _, video := range batch {
 			byID[video.ID] = video
 		}
-		for i, id := range ids {
+		for i, id := range idsByRank {
 			if video := byID[id]; video != nil {
 				videos = append(videos, video)
 				if len(videos) <= limit {
@@ -418,7 +450,7 @@ func (f *FeedService) buildFeedVideos(ctx context.Context, videos []*video.Video
 func buildOrderedResult(orderedIDs []uint, dataMap map[uint]*video.Video) []*video.Video {
 	res := make([]*video.Video, 0, len(orderedIDs))
 	for _, id := range orderedIDs {
-		if v, exits := dataMap[id]; exits && v != nil {
+		if v, exists := dataMap[id]; exists && v != nil {
 			res = append(res, v)
 		}
 	}

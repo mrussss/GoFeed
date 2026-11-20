@@ -117,6 +117,16 @@ func (repo *FeedRepository) GetByIDs(ctx context.Context, ids []uint) ([]*video.
 	return videos, nil
 }
 
+func (repo *FeedRepository) existingVideoIDs(ctx context.Context, ids []uint) ([]uint, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var existing []uint
+	err := repo.db.WithContext(ctx).Model(&video.Video{}).
+		Where("id IN ?", ids).Pluck("id", &existing).Error
+	return existing, err
+}
+
 func (repo *FeedRepository) ListByTag(ctx context.Context, tagName string, limit int) ([]*video.Video, error) {
 	var videos []*video.Video
 	err := repo.db.WithContext(ctx).Model(&video.Video{}).Table("videos").

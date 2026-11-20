@@ -97,3 +97,20 @@
 - `TestFollowingHybridMySQL` 使用隔离 MySQL 和 miniredis，验证 Inbox 与两个作者 Outbox 的归并、Push 作者的历史 Pull 视频、重复 ID、同毫秒连续三页、无效 Member、旧实体缓存里的已删除视频、取关、补齐时保留有效 Redis 候选、Pipeline 失败和 Redis 不可用回源。该事务测试预置实体缓存，真实服务端到端另覆盖实体冷读。
 - 使用独立 MySQL、Redis 和 RabbitMQ 运行 `TestFollowingPipeline` 与 `TestLikeCommandPipeline`，两套用例均通过，覆盖分发侧写入和通过 HTTP 读取取消点赞后的状态。
 - Feed、Social、HTTP 和 Redis 相关包的 `go test -race` 通过。上述包及 Worker 的 `go vet` 和 Git diff 格式检查通过。
+
+## 模块 3 · 批量视频组装与缓存回填
+
+### 调用链与行为
+
+1. Latest 的 Redis 时间线、Following 的已核验候选、Popularity 的 Redis 快照都使用 `GetVideoByIDs`。已有 MySQL 分页查询返回完整视频行时，直接交给 `buildFeedVideos`，继续由它组装卡片和批查点赞状态。
+2. 视频实体先查 L1，仍使用原有 5 秒实体 TTL。把所有未命中的不同 ID 合并为一次 Redis MGET。Redis 保留原 `video:entity:<id>` 键和 60 秒 TTL。无法解析、ID 与 Key 不符或 Redis 不可用时，相关 ID 进入回源批次。
+3. 将缺失 ID 排序后构造进程内 Singleflight 键，使不同输入顺序的同一组 ID 可共享查询。批次执行时重查 L1，仍缺失的 ID 通过一条 MySQL `WHERE id IN (...)` 获取。每个批次共享一次回源执行，等待者可随自身 Context 取消，SQL 使用发起该批次的请求 Context。
+4. 用 ID 映射按每个请求的原始顺序返回，保留输入中的重复 ID。MySQL 成功但没有对应行时跳过该 ID，查询报错时直接返回错误。查到的行同步回填 L1，并用一次 Pipeline 回填 Redis。Redis 回填错误记录日志，已读取的数据库结果仍可返回。
+5. Popularity 快照保留批量查存在 ID 的窄查询，避免已经删除的视频凭旧实体缓存进入榜单。冷读时另有一条实体批量 SQL。快照本身不可读时沿用 MySQL 排名回退，快照组装阶段的数据库错误向上传递。
+
+### 验证
+
+- `TestVideoLookupBatchMySQL` 在独立 MySQL 与 miniredis 上核对了混合命中、缓存内容 ID 校验、输入顺序和重复 ID、缺失视频跳过、Redis 读写失败以及 SQL 错误传播。一轮混合命中观测到 1 次 MGET、1 条带三个缺失 ID 的 SQL、1 次含两条 SET 的回填 Pipeline。完整 L1 命中无远端查询，完整 Redis 命中无 MySQL 实体查询。
+- `TestVideoLookupSingleflightMySQL` 验证两个顺序不同的并发请求只执行一次 SQL，各自保留原始顺序，另一个等待者取消后可独立退出。
+- Feed、Redis 和 Worker 包的定向 `go test -race` 及 `go vet` 通过。常规竞态测试中的四个外部服务 Worker 集成测试按配置跳过。
+- 在真实隔离 MySQL、Redis 和 RabbitMQ 上单独复跑 `TestLikeCommandPipeline` 并通过，覆盖登录后的 Following HTTP 请求和实时点赞状态。分页集成测试另验证了 Popularity 直接使用缓存实体，并跳过已有实体缓存的删除项。
