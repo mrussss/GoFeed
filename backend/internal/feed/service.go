@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
+	"feedsystem_video_go/internal/social"
 	"feedsystem_video_go/internal/video"
 	"log"
 	"strconv"
@@ -18,9 +19,9 @@ import (
 type FeedService struct {
 	repo         *FeedRepository
 	likeRepo     *video.LikeRepository
+	socialRepo   *social.SocialRepository
 	rediscache   *rediscache.Client
 	localcache   *cache.Cache
-	cacheTTL     time.Duration
 	requestGroup singleflight.Group
 }
 
@@ -28,8 +29,8 @@ type CachedFeedData struct {
 	PublicVideos []video.Video `json:"public_videos"`
 }
 
-func NewFeedService(repo *FeedRepository, likeRepo *video.LikeRepository, rediscache *rediscache.Client) *FeedService {
-	return &FeedService{repo: repo, likeRepo: likeRepo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second), cacheTTL: 60 * time.Second}
+func NewFeedService(repo *FeedRepository, likeRepo *video.LikeRepository, socialRepo *social.SocialRepository, rediscache *rediscache.Client) *FeedService {
+	return &FeedService{repo: repo, likeRepo: likeRepo, socialRepo: socialRepo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second)}
 }
 
 func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*video.Video, error) {
@@ -278,81 +279,6 @@ func (f *FeedService) ListLikesCount(ctx context.Context, limit int, cursor *Lik
 	return resp, nil
 }
 
-// 按照关注列表查询视频
-func (f *FeedService) ListByFollowing(ctx context.Context, limit int, cursor *TimeCursor, viewerAccountID uint) (ListByFollowingResponse, error) {
-	doListByFollowingFromDB := func() (ListByFollowingResponse, error) {
-		videos, err := f.repo.ListByFollowing(ctx, limit+1, viewerAccountID, cursor)
-		if err != nil {
-			return ListByFollowingResponse{}, err
-		}
-		return f.buildTimePage(ctx, videos, limit, viewerAccountID)
-	}
-	var cacheKey string
-	if viewerAccountID != 0 && f.rediscache != nil {
-		var before int64
-		var idBefore uint
-		if cursor != nil {
-			before, idBefore = cursor.Time.UnixMilli(), cursor.ID
-		}
-		cacheKey = f.rediscache.Key("feed:listByFollowing:limit=%d:accountID=%d:before=%d:id=%d", limit, viewerAccountID, before, idBefore)
-		cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-		defer cancel()
-
-		b, err := f.rediscache.GetBytes(cacheCtx, cacheKey)
-		if err == nil {
-			var cached ListByFollowingResponse
-			if err := json.Unmarshal(b, &cached); err == nil {
-				return f.refreshFollowingLikes(ctx, cached, viewerAccountID)
-			}
-		} else if rediscache.IsMiss(err) { // 缓存未命中
-			lockKey := "lock:" + cacheKey
-			// 缓存未命中，尝试加锁
-			token, locked, _ := f.rediscache.Lock(cacheCtx, lockKey, 500*time.Millisecond)
-			if locked {
-				defer func() { _ = f.rediscache.Unlock(context.Background(), lockKey, token) }()
-				if b, err := f.rediscache.GetBytes(cacheCtx, cacheKey); err == nil {
-					var cached ListByFollowingResponse
-					if err := json.Unmarshal(b, &cached); err == nil {
-						return f.refreshFollowingLikes(ctx, cached, viewerAccountID)
-					}
-				} else { // 缓存未命中，从数据库中查询
-					resp, err := doListByFollowingFromDB()
-					if err != nil {
-						return ListByFollowingResponse{}, err
-					}
-					if b, err := json.Marshal(resp); err == nil {
-						_ = f.rediscache.SetBytes(cacheCtx, cacheKey, b, f.cacheTTL)
-					}
-					return resp, nil
-				}
-			} else {
-				for i := 0; i < 5; i++ {
-					time.Sleep(20 * time.Millisecond)
-					if b, err := f.rediscache.GetBytes(cacheCtx, cacheKey); err == nil {
-						var cached ListByFollowingResponse
-						if err := json.Unmarshal(b, &cached); err == nil {
-							return f.refreshFollowingLikes(ctx, cached, viewerAccountID)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	resp, err := doListByFollowingFromDB()
-	if err != nil {
-		return ListByFollowingResponse{}, err
-	}
-	if cacheKey != "" {
-		if b, err := json.Marshal(resp); err == nil {
-			cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-			defer cancel()
-			_ = f.rediscache.SetBytes(cacheCtx, cacheKey, b, f.cacheTTL)
-		}
-	}
-	return resp, nil
-}
-
 func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf int64, offset int, viewerAccountID uint, latestPopularity int64, latestBefore time.Time, latestIDBefore uint) (ListByPopularityResponse, error) {
 	// Redis 热榜（稳定分页：as_of + offset）
 	// Continue a MySQL page with its cursor even if Redis has recovered.
@@ -505,20 +431,4 @@ func (f *FeedService) ListByTag(ctx context.Context, tagName string, limit int, 
 		return nil, err
 	}
 	return f.buildFeedVideos(ctx, videos, viewerAccountID)
-}
-
-// User like state must be read fresh even when the following page is cached.
-func (f *FeedService) refreshFollowingLikes(ctx context.Context, response ListByFollowingResponse, accountID uint) (ListByFollowingResponse, error) {
-	ids := make([]uint, 0, len(response.VideoList))
-	for _, item := range response.VideoList {
-		ids = append(ids, item.ID)
-	}
-	liked, err := f.likeRepo.BatchGetLiked(ctx, ids, accountID)
-	if err != nil {
-		return ListByFollowingResponse{}, err
-	}
-	for i := range response.VideoList {
-		response.VideoList[i].IsLiked = liked[response.VideoList[i].ID]
-	}
-	return response, nil
 }

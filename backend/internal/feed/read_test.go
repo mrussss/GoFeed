@@ -2,6 +2,7 @@ package feed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -102,7 +103,8 @@ func TestTimeFeedRejectsInvalidCursor(t *testing.T) {
 	}
 }
 
-func TestReadPaginationMySQL(t *testing.T) {
+func readTestMySQL(t *testing.T) *gorm.DB {
+	t.Helper()
 	dsn := os.Getenv("FEED_READ_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set FEED_READ_TEST_DSN to an isolated MySQL schema named gofeed_read_test")
@@ -120,15 +122,20 @@ func TestReadPaginationMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.AutoMigrate(&video.Video{}, &social.Social{}, &video.Like{}); err != nil {
+	if err := db.AutoMigrate(&video.Video{}, &social.Social{}, &video.Like{}, &video.AuthorFeedState{}); err != nil {
 		t.Fatal(err)
 	}
 
+	return db
+}
+
+func TestReadPaginationMySQL(t *testing.T) {
+	db := readTestMySQL(t)
 	ctx := context.Background()
 	rollback := errors.New("rollback test fixture")
-	err = db.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		cache, raw := readTestRedis(t)
-		service := NewFeedService(NewFeedRepository(tx), video.NewLikeRepository(tx), cache)
+		service := NewFeedService(NewFeedRepository(tx), video.NewLikeRepository(tx), social.NewSocialRepository(tx), cache)
 		at := time.UnixMilli(1_794_012_300_123).UTC()
 		author, viewer := uint(1), uint(2)
 		all := []uint{109, 99, 19, 12, 10, 9}
@@ -250,4 +257,138 @@ func feedIDs(items []FeedVideoItem) []uint {
 		ids[i] = item.ID
 	}
 	return ids
+}
+
+func TestFollowingHybridMySQL(t *testing.T) {
+	db := readTestMySQL(t)
+	ctx := context.Background()
+	rollback := errors.New("rollback following fixture")
+	err := db.Transaction(func(tx *gorm.DB) error {
+		cache, raw := readTestRedis(t)
+		socialRepo := social.NewSocialRepository(tx)
+		service := NewFeedService(NewFeedRepository(tx), video.NewLikeRepository(tx), socialRepo, cache)
+		const viewer, authorPush, authorPull, other = 1, 2, 3, 4
+		stamp := time.UnixMilli(1_794_012_300_123).UTC()
+		push, pull := video.DistributionPush, video.DistributionPull
+		states := []video.AuthorFeedState{{AuthorID: authorPush, DistributionMode: push}, {AuthorID: authorPull, DistributionMode: pull}}
+		if err := tx.Create(&states).Error; err != nil {
+			t.Fatal(err)
+		}
+		videos := []video.Video{
+			{ID: 110, AuthorID: authorPush, CreateTime: stamp, DistributionMode: &push},
+			{ID: 105, AuthorID: authorPull, CreateTime: stamp, DistributionMode: &pull},
+			{ID: 100, AuthorID: authorPush, CreateTime: stamp, DistributionMode: &pull},
+			{ID: 99, AuthorID: authorPull, CreateTime: stamp},
+			{ID: 98, AuthorID: authorPull, CreateTime: stamp},
+			{ID: 97, AuthorID: authorPush, CreateTime: stamp.Add(-time.Millisecond)},
+			{ID: 199, AuthorID: authorPush, CreateTime: stamp.Add(time.Millisecond)},
+			{ID: 200, AuthorID: other, CreateTime: stamp.Add(time.Millisecond)},
+		}
+		if err := tx.Create(&videos).Error; err != nil {
+			t.Fatal(err)
+		}
+		// Keep entity reads on Redis so the existing per-ID DB goroutines do
+		// not concurrently use this fixture's single transaction connection.
+		for _, row := range videos {
+			if row.ID == 100 {
+				row.Title = "indexed entity cache"
+			}
+			payload, err := json.Marshal(row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cache.SetBytes(ctx, cache.Key("video:entity:%d", row.ID), payload, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+		}
+		links := []social.Social{{FollowerID: viewer, VloggerID: authorPush}, {FollowerID: viewer, VloggerID: authorPull}, {FollowerID: viewer, VloggerID: other}}
+		if err := tx.Create(&links).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Create(&video.Like{VideoID: 105, AccountID: viewer, Status: 1}).Error; err != nil {
+			t.Fatal(err)
+		}
+		inbox := cache.Key("feed:inbox:%d", viewer)
+		pushOutbox := cache.Key("feed:author_outbox:%d", authorPush)
+		pullOutbox := cache.Key("feed:author_outbox:%d", authorPull)
+		add := func(key string, at time.Time, ids ...uint) {
+			t.Helper()
+			for _, id := range ids {
+				member, err := FollowingMember(at.UnixMilli(), id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := raw.ZAdd(ctx, key, goredis.Z{Score: 0, Member: member}).Err(); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		add(inbox, stamp, 110)
+		add(pushOutbox, stamp, 110, 100)
+		add(pullOutbox, stamp, 105, 98)
+		// The current push author contributes a historical Outbox video.
+		hot, err := service.ListByFollowing(ctx, 3, nil, viewer)
+		if err != nil || !hot.HasMore || !reflect.DeepEqual(feedIDs(hot.VideoList), []uint{110, 105, 100}) || !hot.VideoList[1].IsLiked {
+			t.Fatalf("hot page = %+v, %v", hot, err)
+		}
+		if _, ok := service.localcache.Get(cache.Key("video:entity:%d", 100)); !ok {
+			t.Fatal("push author's historical outbox candidate was not hydrated")
+		}
+		if err := tx.Model(&video.Like{}).Where("account_id = ? AND video_id = ?", viewer, 105).Update("status", 0).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		add(inbox, stamp.Add(time.Millisecond), 199, 200)
+		if _, err := service.GetVideoByIDs(ctx, []uint{199, 200}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Delete(&video.Video{}, 199).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := socialRepo.Unfollow(ctx, &links[2]); err != nil {
+			t.Fatal(err)
+		}
+		if err := raw.ZAdd(ctx, inbox, goredis.Z{Score: 0, Member: "malformed"}).Err(); err != nil {
+			t.Fatal(err)
+		}
+		add(inbox, stamp, 97) // Corrupt timestamp, so this must not move ID 97 earlier.
+
+		var cursor *TimeCursor
+		for i, want := range [][]uint{{110, 105}, {100, 99}, {98, 97}} {
+			page, err := service.ListByFollowing(ctx, 2, cursor, viewer)
+			if err != nil || !reflect.DeepEqual(feedIDs(page.VideoList), want) || page.HasMore != (i < 2) {
+				t.Fatalf("page %d = %+v, %v, want %v", i+1, page, err, want)
+			}
+			if i == 1 && page.VideoList[0].Title != "indexed entity cache" {
+				t.Fatal("history fill replaced the indexed candidate")
+			}
+			if page.VideoList[1].IsLiked {
+				t.Fatal("Following returned stale like state")
+			}
+			cursor = &TimeCursor{Time: time.UnixMilli(page.NextTime).UTC(), ID: page.NextIDBefore}
+		}
+		empty, err := service.ListByFollowing(ctx, 2, nil, other)
+		if err != nil || empty.HasMore || len(empty.VideoList) != 0 {
+			t.Fatalf("viewer without follows = %+v, %v", empty, err)
+		}
+		// A failed Redis command in any source switches to the complete MySQL query.
+		if err := raw.Set(ctx, pushOutbox, "wrongtype", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+		fallback, err := service.ListByFollowing(ctx, 4, nil, viewer)
+		if err != nil || !fallback.HasMore || !reflect.DeepEqual(feedIDs(fallback.VideoList), []uint{110, 105, 100, 99}) {
+			t.Fatalf("pipeline error fallback = %+v, %v", fallback, err)
+		}
+		if err := raw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		fallback, err = service.ListByFollowing(ctx, 4, nil, viewer)
+		if err != nil || !fallback.HasMore || !reflect.DeepEqual(feedIDs(fallback.VideoList), []uint{110, 105, 100, 99}) {
+			t.Fatalf("unavailable Redis fallback = %+v, %v", fallback, err)
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatal(err)
+	}
 }

@@ -16,11 +16,14 @@ import (
 	"testing"
 	"time"
 
+	"feedsystem_video_go/internal/account"
 	"feedsystem_video_go/internal/config"
 	appdb "feedsystem_video_go/internal/db"
+	"feedsystem_video_go/internal/feed"
 	apphttp "feedsystem_video_go/internal/http"
 	"feedsystem_video_go/internal/middleware/rabbitmq"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
+	"feedsystem_video_go/internal/social"
 	"feedsystem_video_go/internal/video"
 	"feedsystem_video_go/internal/worker"
 	drivermysql "github.com/go-sql-driver/mysql"
@@ -138,10 +141,18 @@ func TestLikeCommandPipeline(t *testing.T) {
 	if err = json.Unmarshal(login["account_id"], &accountID); err != nil {
 		t.Fatal(err)
 	}
+	author := account.Account{Username: "phase_c_author"}
+	if err := db.Create(&author).Error; err != nil {
+		t.Fatal(err)
+	}
+	feedVideos := make([]video.Video, 0, 2)
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
 	for _, id := range []uint{10, 11} {
-		if err = db.Create(&video.Video{ID: id, AuthorID: accountID, Username: "phase_c_user", Title: "C demo", PlayURL: "demo", CoverURL: "demo"}).Error; err != nil {
+		row := video.Video{ID: id, AuthorID: author.ID, Username: author.Username, CreateTime: createdAt.Add(-time.Duration(id) * time.Millisecond), Title: "C demo", PlayURL: "demo", CoverURL: "demo"}
+		if err := db.Create(&row).Error; err != nil {
 			t.Fatal(err)
 		}
+		feedVideos = append(feedVideos, row)
 	}
 	accept := func(id uint, requestID string, liked bool, want int) map[string]json.RawMessage {
 		t.Helper()
@@ -338,18 +349,29 @@ func TestLikeCommandPipeline(t *testing.T) {
 	if string(liked["is_liked"]) != "false" || batch[10] || len(list) != 0 {
 		t.Fatal("inactive relation leaked into reads")
 	}
-	// A cached following page may retain counts until TTL, but not an obsolete
-	// per-account is_liked value.
-	followingKey := cache.Key("feed:listByFollowing:limit=10:accountID=%d:before=0:id=0", accountID)
-	if err := raw.Set(ctx, followingKey, `{"video_list":[{"id":10,"is_liked":true,"likes_count":1}],"has_more":false}`, time.Minute).Err(); err != nil {
+	// Following must fetch current viewer state when reading indexed candidates.
+	if err := db.Create(&social.Social{FollowerID: accountID, VloggerID: author.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	following := request("/feed/listByFollowing", map[string]int{"limit": 10}, 200)
+	members := make([]redis.Z, 0, len(feedVideos))
+	for _, row := range feedVideos {
+		member, err := feed.FollowingMember(row.CreateTime.UnixMilli(), row.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		members = append(members, redis.Z{Score: 0, Member: member})
+	}
+	inbox := cache.Key("feed:inbox:%d", accountID)
+	if err := raw.ZAdd(ctx, inbox, members...).Err(); err != nil {
+		t.Fatal(err)
+	}
+	following := request("/feed/listByFollowing", map[string]int{"limit": 1}, 200)
 	var items []struct {
+		ID      uint `json:"id"`
 		IsLiked bool `json:"is_liked"`
 	}
-	if err := json.Unmarshal(following["video_list"], &items); err != nil || len(items) != 1 || items[0].IsLiked {
-		t.Fatalf("following cache retained inactive like: %+v %v", items, err)
+	if err := json.Unmarshal(following["video_list"], &items); err != nil || len(items) != 1 || items[0].ID != 10 || items[0].IsLiked {
+		t.Fatalf("following returned an inactive like: %+v %v", items, err)
 	}
 	var firstCommand video.CommandOutbox
 	if err = db.Where("account_id=? AND request_id='like-first'", accountID).Take(&firstCommand).Error; err != nil {

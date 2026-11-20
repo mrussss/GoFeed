@@ -47,22 +47,34 @@ func (repo *FeedRepository) ListLikesCountWithCursor(ctx context.Context, limit 
 	return videos, nil
 }
 
+func (repo *FeedRepository) followingVideos(ctx context.Context, viewerAccountID uint) *gorm.DB {
+	following := repo.db.WithContext(ctx).Model(&social.Social{}).
+		Select("vlogger_id").Where("follower_id = ?", viewerAccountID)
+	return repo.db.WithContext(ctx).Model(&video.Video{}).Where("author_id IN (?)", following)
+}
+
 func (repo *FeedRepository) ListByFollowing(ctx context.Context, limit int, viewerAccountID uint, cursor *TimeCursor) ([]*video.Video, error) {
 	var videos []*video.Video
-	query := repo.db.WithContext(ctx).Model(&video.Video{}).
-		Order("create_time DESC, id DESC")
-	if viewerAccountID > 0 {
-		followingSubQuery := repo.db.WithContext(ctx).
-			Model(&social.Social{}).
-			Select("vlogger_id").
-			Where("follower_id = ?", viewerAccountID)
-		query = query.Where("author_id IN (?)", followingSubQuery)
+	query := repo.followingVideos(ctx, viewerAccountID).Order("create_time DESC, id DESC")
+	err := applyTimeCursor(query, cursor).Limit(limit).Find(&videos).Error
+	return videos, err
+}
+
+func (repo *FeedRepository) followingCandidateTimes(ctx context.Context, viewerAccountID uint, ids []uint) (map[uint]int64, error) {
+	var matches []struct {
+		ID         uint
+		CreateTime time.Time
 	}
-	query = applyTimeCursor(query, cursor)
-	if err := query.Limit(limit).Find(&videos).Error; err != nil {
+	err := repo.followingVideos(ctx, viewerAccountID).Select("id", "create_time").
+		Where("id IN ?", ids).Find(&matches).Error
+	if err != nil {
 		return nil, err
 	}
-	return videos, nil
+	times := make(map[uint]int64, len(matches))
+	for _, match := range matches {
+		times[match.ID] = match.CreateTime.UnixMilli()
+	}
+	return times, nil
 }
 
 func applyTimeCursor(query *gorm.DB, cursor *TimeCursor) *gorm.DB {

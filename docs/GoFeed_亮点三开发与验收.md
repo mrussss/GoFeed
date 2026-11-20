@@ -78,3 +78,22 @@
 - `go test -count=1 -v ./internal/feed ./internal/middleware/redis ./internal/worker` 已通过。Feed 使用隔离 MySQL `gofeed_read_test` 和 miniredis，覆盖同毫秒三页、翻页间插入更新视频、缓存热页、冷热拼接、精确末页、无效游标、Redis Lex 排他与 Pipeline 错误，以及热榜删除项跳过。
 - 本轮未配置 Worker 集成套件的独立连接变量，`TestLikeCommandRelay`、`TestFollowingPipeline`、`TestLikeCommandPipeline`、`TestLikeCommandBatchWorker` 已跳过。
 - `go vet ./internal/feed ./internal/middleware/redis ./internal/worker`、前端 `npm run build` 和 `git diff --check` 已通过。
+
+## 模块 2 · Following 混合候选读取
+
+### 调用链
+
+1. `POST /feed/listByFollowing` 经 JWT 校验后进入 Feed Handler。Handler 解析严格排他的毫秒与 ID 游标，再调用 `FeedService.ListByFollowing`。
+2. `SocialRepository.ListFollowedAuthorIDs` 通过 `idx_social_follower_vlogger` 只取当前关注的作者 ID。Pipeline 逆序读取用户 Inbox 和这些作者的全部 Outbox，每个来源最多读取 `limit+1` 条。作者当前为 Push 时，过去写入 Outbox 的 Pull 视频仍可参加归并。
+3. 最大堆比较各来源的首条 Member，每次取出全局最新的一条并推进该来源。固定宽度字符串的比较顺序与毫秒、数字 ID 的降序一致。归并时跳过无法解析的 Member，按 VideoID 去重，保留至多 `limit+1` 个候选。堆只跟踪各来源的当前位置。
+4. 对这批 ID 查询 MySQL 的 `id` 和 `create_time`，同时核对当前关注关系。已删除、已取关和索引时间与数据库不符的候选在组装前被过滤，命中旧实体缓存也无法绕过这次检查。随后用 `GetVideoByIDs` 获取详情，维持候选顺序。
+5. 过滤或组装后不足 `limit+1` 条时，从原请求游标查询 MySQL 前缀，按相同顺序与有效的 Redis 结果归并。这样可补入位于 Redis 候选之间的历史项，同一视频只保留一次，已有的 Redis 候选保留。Redis Pipeline 失败或实例未配置时，直接走完整 MySQL Following 查询。MySQL 失败会向上传递，由当前 Handler 返回 HTTP 500。
+6. `buildTimePage` 去掉探测用的额外结果并生成下一页游标。`buildFeedVideos` 调用 `BatchGetLiked` 查询当前用户的点赞状态。旧 Following 整页缓存、缓存命中后的专用点赞刷新函数和关注写入时的整页缓存失效逻辑已移除。
+
+新关注作者的历史内容以现存候选和按需 MySQL 补齐能覆盖的范围为准。当 Redis 已提供足量候选时，排序区间内未被索引的历史项可能跨过分页边界。关注表结构沿用现有字段，关注写入沿用现有分发流程。
+
+### 验证
+
+- `TestFollowingHybridMySQL` 使用隔离 MySQL 和 miniredis，验证 Inbox 与两个作者 Outbox 的归并、Push 作者的历史 Pull 视频、重复 ID、同毫秒连续三页、无效 Member、旧实体缓存里的已删除视频、取关、补齐时保留有效 Redis 候选、Pipeline 失败和 Redis 不可用回源。该事务测试预置实体缓存，真实服务端到端另覆盖实体冷读。
+- 使用独立 MySQL、Redis 和 RabbitMQ 运行 `TestFollowingPipeline` 与 `TestLikeCommandPipeline`，两套用例均通过，覆盖分发侧写入和通过 HTTP 读取取消点赞后的状态。
+- Feed、Social、HTTP 和 Redis 相关包的 `go test -race` 通过。上述包及 Worker 的 `go vet` 和 Git diff 格式检查通过。
