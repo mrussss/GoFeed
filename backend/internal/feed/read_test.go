@@ -860,9 +860,13 @@ func TestVideoDeleteFeedCachesMySQL(t *testing.T) {
 					t.Fatalf("popularity = %+v, error %v", rank, err)
 				}
 				if fail {
-					timer := time.NewTimer(videoLocalTTL + 50*time.Millisecond)
-					defer timer.Stop()
-					<-timer.C
+					deadline := time.Now().Add(videoLocalTTL + time.Second)
+					for feeds.localVideo(11) != nil {
+						if time.Now().After(deadline) {
+							t.Fatal("stale L1 entry exceeded its TTL")
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
 					checkLatest(feeds, 12)
 				}
 				return rollback
@@ -902,6 +906,25 @@ func TestFeedBackpressureMySQL(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	const viewer = 2
+	link := social.Social{FollowerID: viewer, VloggerID: fixture[0].AuthorID}
+	like := video.Like{VideoID: fixture[0].ID, AccountID: viewer, Status: 1}
+	if err := db.Create(&link).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Where("follower_id = ? AND vlogger_id = ?", link.FollowerID, link.VloggerID).Delete(&link).Error; err != nil {
+			t.Error(err)
+		}
+	})
+	if err := db.Create(&like).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Delete(&like).Error; err != nil {
+			t.Error(err)
+		}
+	})
 
 	server := miniredis.RunT(t)
 	raw := goredis.NewClient(&goredis.Options{Addr: server.Addr(), MaxRetries: -1, ContextTimeoutEnabled: true})
@@ -910,20 +933,20 @@ func TestFeedBackpressureMySQL(t *testing.T) {
 	service := NewFeedService(NewFeedRepository(db), video.NewLikeRepository(db), social.NewSocialRepository(db), cache)
 	timeline := cache.Key(feedindex.GlobalTimelineKey)
 	for _, row := range fixture {
-		if err := raw.ZAdd(ctx, timeline, timelineZ(t, row.CreateTime, row.ID)).Err(); err != nil {
-			t.Fatal(err)
+		for _, key := range []string{timeline, cache.Key("feed:author_outbox:%d", row.AuthorID)} {
+			if err := raw.ZAdd(ctx, key, timelineZ(t, row.CreateTime, row.ID)).Err(); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 
 	router := gin.New()
 	h := NewFeedHandler(service)
 	router.POST("/latest", h.ListLatest)
-	router.POST("/likes", h.ListLikesCount)
-	router.POST("/following", func(c *gin.Context) { c.Set("accountID", uint(1)) }, h.ListByFollowing)
+	router.POST("/following", func(c *gin.Context) { c.Set("accountID", uint(viewer)) }, h.ListByFollowing)
 	router.POST("/popular", h.ListByPopularity)
-	router.POST("/tag", h.ListByTag)
 	request := func(requestCtx context.Context, path string) *httptest.ResponseRecorder {
-		req := httptest.NewRequestWithContext(requestCtx, http.MethodPost, path, strings.NewReader(`{"limit":1,"tag_name":"test"}`))
+		req := httptest.NewRequestWithContext(requestCtx, http.MethodPost, path, strings.NewReader(`{"limit":1}`))
 		req.Header.Set("Content-Type", "application/json")
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
@@ -938,8 +961,33 @@ func TestFeedBackpressureMySQL(t *testing.T) {
 		}
 	}
 	checkLatest(request(ctx, "/latest"))
+	t.Run("warm_following_with_full_budget", func(t *testing.T) {
+		for range feedReadConcurrency {
+			service.reads.active <- struct{}{}
+		}
+		defer func() {
+			for range feedReadConcurrency {
+				<-service.reads.active
+			}
+		}()
+		responses := make(chan *httptest.ResponseRecorder, 32)
+		for range cap(responses) {
+			go func() { responses <- request(ctx, "/following") }()
+		}
+		for range cap(responses) {
+			res := <-responses
+			var page ListLatestResponse
+			if res.Code != http.StatusOK || json.Unmarshal(res.Body.Bytes(), &page) != nil || !page.HasMore ||
+				len(page.VideoList) != 1 || page.VideoList[0].ID != fixture[0].ID || !page.VideoList[0].IsLiked {
+				t.Errorf("warm Following got %d %s", res.Code, res.Body)
+			}
+		}
+	})
 	server.Close()
 	checkLatest(request(ctx, "/latest"))
+	if res := request(ctx, "/following"); res.Code != http.StatusOK {
+		t.Fatalf("Following Redis outage fallback got %d %s", res.Code, res.Body)
+	}
 
 	entered := make(chan struct{}, 64)
 	release := make(chan struct{})
@@ -952,6 +1000,9 @@ func TestFeedBackpressureMySQL(t *testing.T) {
 	}()
 	var sqlEntries atomic.Int32
 	if err := db.Callback().Query().Before("gorm:query").Register("test:hold_feed_reads", func(tx *gorm.DB) {
+		if tx.Statement.Table != "videos" {
+			return // The Following relation query can still run during a Redis outage.
+		}
 		sqlEntries.Add(1)
 		entered <- struct{}{}
 		select {
@@ -994,10 +1045,14 @@ func TestFeedBackpressureMySQL(t *testing.T) {
 	}
 
 	var overflow []<-chan *httptest.ResponseRecorder
-	for _, path := range []string{"/latest", "/likes", "/following", "/popular", "/tag"} {
+	for _, path := range []string{"/latest", "/following", "/popular"} {
 		for range 5 {
 			overflow = append(overflow, start(ctx, path))
 		}
+	}
+	service.EvictVideo(fixture[1].ID)
+	if _, err := service.GetVideoByIDs(ctx, []uint{fixture[0].ID, fixture[1].ID}); !errors.Is(err, ErrFeedReadOverloaded) {
+		t.Fatalf("cold entity batch during Redis outage got %v", err)
 	}
 	for _, done := range overflow {
 		select {
@@ -1016,7 +1071,7 @@ func TestFeedBackpressureMySQL(t *testing.T) {
 	cancelHeld()
 	select {
 	case res := <-held[0]:
-		if !strings.Contains(res.Body.String(), "context canceled") {
+		if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), "context canceled") {
 			t.Fatalf("canceled query: %d %s", res.Code, res.Body)
 		}
 	case <-ctx.Done():
@@ -1053,7 +1108,7 @@ func TestFeedBackpressureMySQL(t *testing.T) {
 func TestFeedSQLDeadlineReleasesSlot(t *testing.T) {
 	budget := newFeedReadBudget()
 	started := time.Now()
-	_, err := readFeedMySQL(context.Background(), budget, func(ctx context.Context) (int, error) {
+	_, err := readFeedFallbackMySQL(context.Background(), budget, func(ctx context.Context) (int, error) {
 		<-ctx.Done()
 		return 0, ctx.Err()
 	})
@@ -1062,6 +1117,20 @@ func TestFeedSQLDeadlineReleasesSlot(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed < feedQueryTimeout || elapsed > time.Second {
 		t.Fatalf("observed SQL timeout %v", elapsed)
+	}
+	queryErr := errors.New("injected SQL error")
+	_, err = readFeedFallbackMySQL(context.Background(), budget, func(context.Context) (int, error) {
+		return 0, queryErr
+	})
+	if !errors.Is(err, queryErr) || len(budget.active) != 0 {
+		t.Fatalf("query error got %v with %d occupied slots", err, len(budget.active))
+	}
+	_, err = readFeedMySQL(context.Background(), func(ctx context.Context) (int, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("normal SQL deadline got %v", err)
 	}
 }
 

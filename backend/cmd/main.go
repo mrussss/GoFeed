@@ -14,7 +14,22 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"gorm.io/gorm"
 )
+
+func newAPIDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
+	conn, err := db.NewDB(cfg)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := conn.DB()
+	if err != nil {
+		return nil, err
+	}
+	pool.SetMaxOpenConns(16)
+	pool.SetMaxIdleConns(8)
+	return conn, nil
+}
 
 func main() {
 	// 加载 .env（本地开发）
@@ -40,7 +55,7 @@ func main() {
 
 	// 连接数据库
 	//log.Printf("Database config: %v", cfg.Database)
-	sqlDB, err := db.NewDB(cfg.Database)
+	sqlDB, err := newAPIDB(cfg.Database)
 	if err != nil {
 		log.Fatalf("Failed to connect database: %v", err)
 	}

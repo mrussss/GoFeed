@@ -57,14 +57,19 @@ func (budget feedReadBudget) acquire(ctx context.Context) error {
 	}
 }
 
-// readFeedMySQL bounds one SQL operation, leaving cache work and response
-// assembly outside the budget.
-func readFeedMySQL[T any](ctx context.Context, budget feedReadBudget, query func(context.Context) (T, error)) (T, error) {
+// readFeedFallbackMySQL reserves one slot for a fallback or rebuild query.
+func readFeedFallbackMySQL[T any](ctx context.Context, budget feedReadBudget, query func(context.Context) (T, error)) (T, error) {
 	var zero T
 	if err := budget.acquire(ctx); err != nil {
 		return zero, err
 	}
 	defer func() { <-budget.active }()
+	return readFeedMySQL(ctx, query)
+}
+
+// readFeedMySQL bounds connection pool wait and execution for one query.
+func readFeedMySQL[T any](ctx context.Context, query func(context.Context) (T, error)) (T, error) {
+	var zero T
 	if err := ctx.Err(); err != nil {
 		return zero, err
 	}

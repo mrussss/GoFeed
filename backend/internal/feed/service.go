@@ -145,7 +145,7 @@ func (f *FeedService) loadVideoBatch(ctx context.Context, ids []uint) ([]*video.
 	if len(missing) == 0 {
 		return videos, nil
 	}
-	rows, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+	rows, err := readFeedFallbackMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
 		return f.repo.GetByIDs(queryCtx, missing)
 	})
 	if err != nil {
@@ -271,7 +271,7 @@ func (f *FeedService) latestCandidates(ctx context.Context, count int, cursor *T
 }
 
 func (f *FeedService) latestFromMySQL(ctx context.Context, count int, cursor *TimeCursor) ([]*video.Video, error) {
-	return readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+	return readFeedFallbackMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
 		return f.repo.ListLatest(queryCtx, count, cursor)
 	})
 }
@@ -294,7 +294,7 @@ func (f *FeedService) buildTimePage(ctx context.Context, videos []*video.Video, 
 
 // 按照点赞数查询视频
 func (f *FeedService) ListLikesCount(ctx context.Context, limit int, cursor *LikesCountCursor, viewerAccountID uint) (ListLikesCountResponse, error) {
-	videos, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+	videos, err := readFeedMySQL(ctx, func(queryCtx context.Context) ([]*video.Video, error) {
 		return f.repo.ListLikesCountWithCursor(queryCtx, limit+1, cursor)
 	})
 	if err != nil {
@@ -369,7 +369,7 @@ func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf i
 		}
 	}
 
-	videos, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+	videos, err := readFeedFallbackMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
 		return f.repo.ListByPopularity(queryCtx, limit+1, latestPopularity, latestBefore, latestIDBefore)
 	})
 	if err != nil {
@@ -444,7 +444,7 @@ func (f *FeedService) loadPopularityCandidates(ctx context.Context, ids []uint) 
 		return nil, nil
 	}
 	// The sorted set and entity cache can both outlive a deleted row.
-	existing, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]uint, error) {
+	existing, err := readFeedMySQL(ctx, func(queryCtx context.Context) ([]uint, error) {
 		return f.repo.existingVideoIDs(queryCtx, ids)
 	})
 	if err != nil {
@@ -462,7 +462,7 @@ func (f *FeedService) buildFeedVideos(ctx context.Context, videos []*video.Video
 			videoIDs[i] = v.ID
 		}
 		var err error
-		likedMap, err = readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) (map[uint]bool, error) {
+		likedMap, err = readFeedMySQL(ctx, func(queryCtx context.Context) (map[uint]bool, error) {
 			return f.likeRepo.BatchGetLiked(queryCtx, videoIDs, viewerAccountID)
 		})
 		if err != nil {
@@ -496,7 +496,7 @@ func buildOrderedResult(orderedIDs []uint, dataMap map[uint]*video.Video) []*vid
 }
 
 func (f *FeedService) ListByTag(ctx context.Context, tagName string, limit int, viewerAccountID uint) ([]FeedVideoItem, error) {
-	videos, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+	videos, err := readFeedMySQL(ctx, func(queryCtx context.Context) ([]*video.Video, error) {
 		return f.repo.ListByTag(queryCtx, tagName, limit)
 	})
 	if err != nil {

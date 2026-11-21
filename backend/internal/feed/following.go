@@ -23,7 +23,7 @@ func (f *FeedService) followingVideos(ctx context.Context, count int, cursor *Ti
 	if f.rediscache == nil {
 		return f.followingFromMySQL(ctx, count, viewerID, cursor)
 	}
-	authors, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]uint, error) {
+	authors, err := readFeedMySQL(ctx, func(queryCtx context.Context) ([]uint, error) {
 		return f.socialRepo.ListFollowedAuthorIDs(queryCtx, viewerID)
 	})
 	if err != nil || len(authors) == 0 {
@@ -69,7 +69,7 @@ func (f *FeedService) followingVideos(ctx context.Context, count int, cursor *Ti
 }
 
 func (f *FeedService) followingFromMySQL(ctx context.Context, count int, viewerID uint, cursor *TimeCursor) ([]*video.Video, error) {
-	return readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
+	return readFeedFallbackMySQL(ctx, f.reads, func(queryCtx context.Context) ([]*video.Video, error) {
 		return f.repo.ListByFollowing(queryCtx, count, viewerID, cursor)
 	})
 }
@@ -84,7 +84,7 @@ func (f *FeedService) loadFollowingCandidates(ctx context.Context, viewerID uint
 	}
 	// Cached entities can outlive deletion. Check existence, the current
 	// follow relation and the indexed timestamp using just two columns.
-	times, err := readFeedMySQL(ctx, f.reads, func(queryCtx context.Context) (map[uint]int64, error) {
+	times, err := readFeedMySQL(ctx, func(queryCtx context.Context) (map[uint]int64, error) {
 		return f.repo.followingCandidateTimes(queryCtx, viewerID, ids)
 	})
 	if err != nil {

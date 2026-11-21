@@ -183,6 +183,8 @@ SQL 数量固定为每请求三条，10,000 作者、10 VU 的 MySQL 服务端 S
 
 ## 模块 4 · MySQL 回源保护
 
+以下三节记录模块 4 初版的行为与验证。当前连接池和 SQL 保护范围见「最终调整」。
+
 ### 三档行为
 
 | 行为 | 触发条件 | 请求结果 |
@@ -206,6 +208,21 @@ Latest Redis 候选查询和重建回填调用使用 50 ms 子 Context。运行�
 - `TestFeedBackpressureMySQL` 在独立 MySQL 和可关闭、可重启的 miniredis 上验证正常、故障与恢复。故障时暖 L1 实体可用，MySQL 返回完整 Feed。持有 8 个执行额度时，覆盖 Latest、Following、LikesCount、Popularity 和 Tag 的 25 个额外请求全部得到 HTTP 503，未进入 SQL。取消在途请求后，新请求获得释放的额度。Redis 恢复后，已预热的 Latest 恢复为零 SQL。
 - `TestFeedSQLDeadlineReleasesSlot` 验证查询期限与额度回收，`TestRuntimeClientHonorsRedisDeadline` 验证运行时客户端从不响应的 Redis 命令退出。现有 Feed 分页、删除一致性和 Singleflight Leader 取消用例一并通过。
 - 全量 `go test -count=1 ./...`、定向 `go test -race`、`go vet` 和 Git diff 检查通过。并发额度测试在 race 模式另重复五轮，均通过。Worker 的 `TestLikeCommandRelay`、`TestLikeCommandPipeline`、`TestLikeCommandBatchWorker`、`TestFollowingPipeline` 在本轮未设置各自连接变量，按条件跳过。实际 Redis 停止与恢复的压测留在模块 6。
+
+### 最终调整
+
+采用专项实验中的 16/8 连接池与 `FallbackOnly` 保护范围。API 在 `db.NewDB` 返回后、迁移与路由初始化前，在底层 `sql.DB` 上设置 `SetMaxOpenConns(16)` 和 `SetMaxIdleConns(8)`。Worker 进程仍直接调用 `db.NewDB`，使用自己的默认池。参见 [连接池与 Feed 预算专项实验](GoFeed_模块4_MySQL连接池与Feed预算专项实验.md)。
+
+| SQL 路径 | 执行方式 |
+| --- | --- |
+| `GetVideoByIDs` 实体缓存未命中的批量查询、Following 完整回源与历史补齐、Latest 冷数据回源与全局时间线重建、Popularity MySQL 排名回退及后续 MySQL 分页 | `readFeedFallbackMySQL` 每条 SQL 获取一次 Semaphore 额度，再调用 `readFeedMySQL`。实体回源和时间线重建在 Singleflight 内实际执行 SQL 时取额度。 |
+| Following 当前关注作者 ID 与候选有效性核验、`BatchGetLiked`、Popularity 独立存在性核验、LikesCount 榜单、`ListByTag` | 直接调用 `readFeedMySQL`，由 API 共享池处理。 |
+
+`readFeedMySQL` 从请求 Context 派生 250 ms SQL 期限，覆盖共享池等待及查询。回源额度仍为执行 8、等待 8、最长入场等待 20 ms，SQL 期限从入场后开始计算。查询返回时释放执行额度，取消和出错同样会释放。仅额度不足沿用 HTTP 503，查询错误沿现有错误映射返回。
+
+`TestMySQLPoolSettings` 使用隔离 MySQL 验证 API 和 Worker 初始化路径的最大连接数及实测空闲连接数。`TestFeedBackpressureMySQL` 在回源额度占满时检查 32 个暖 Following 请求的状态、卡片与点赞结果，并在测试 Redis 停机后覆盖 Following、Latest、Popularity 和实体回源的入场拒绝，以及取消后释放与 Redis 恢复。`TestFeedSQLDeadlineReleasesSlot` 检查两条查询路径的期限、回源额度释放及 SQL 错误传播。已有删除缓存用例的定时失败在基准提交上复现，本轮将固定时长等待改为在有限时间内等待 L1 条目实际过期。
+
+在既有隔离 MySQL、Redis 和 RabbitMQ 环境运行 `go test -count=1 -p 1 -v ./...`、`go test -race -count=1 -p 1 -v ./...` 和 `go vet ./...`，全部通过，测试用例零跳过。暖 Following 的 32 个并发请求均返回 HTTP 200，故障场景的超额回源请求返回 HTTP 503。验证采用集成测试中的 HTTP Handler 回归。
 
 ## 模块 5 · Latest 与榜单分页
 
