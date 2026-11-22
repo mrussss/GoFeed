@@ -7,7 +7,7 @@ import FeedVideoCard from '../components/FeedVideoCard.vue'
 import { ApiError } from '../api/client'
 import * as feedApi from '../api/feed'
 import { useLikeFollow } from '../composables/useLikeFollow'
-import type { FeedVideoItem } from '../api/types'
+import type { FeedTimeCursor, FeedVideoItem } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -19,13 +19,13 @@ type ListState = {
   has_more: boolean
 }
 
-const latest = reactive<ListState & { limit: number; next_time: number }>({
+const latest = reactive<ListState & { limit: number; cursor?: FeedTimeCursor }>({
   loading: false,
   error: '',
   items: [],
   has_more: false,
   limit: 10,
-  next_time: 0,
+  cursor: undefined,
 })
 
 const likesCount = reactive<ListState & { limit: number; next_likes_count_before?: number; next_id_before?: number }>({
@@ -38,13 +38,13 @@ const likesCount = reactive<ListState & { limit: number; next_likes_count_before
   next_id_before: undefined,
 })
 
-const following = reactive<ListState & { limit: number; next_time: number }>({
+const following = reactive<ListState & { limit: number; cursor?: FeedTimeCursor }>({
   loading: false,
   error: '',
   items: [],
   has_more: false,
   limit: 10,
-  next_time: 0,
+  cursor: undefined,
 })
 
 const action = reactive<{ loading: boolean; error: string; payload: unknown; name: string }>({
@@ -61,12 +61,12 @@ async function loadLatest(reset: boolean) {
   latest.error = ''
   const accountId = auth.claims?.account_id
   try {
-    const latest_time = reset ? 0 : latest.next_time
-    const res = await feedApi.listLatest({ limit: latest.limit, latest_time })
+    const limit = latest.limit
+    const res = await feedApi.listLatest(reset || !latest.cursor ? { limit } : { limit, ...latest.cursor })
     if (auth.claims?.account_id !== accountId) return
     res.video_list.forEach(item => protectLike(item, true))
     latest.has_more = res.has_more
-    latest.next_time = res.next_time
+    latest.cursor = res.next_id_before > 0 ? { latest_time: res.next_time, id_before: res.next_id_before } : undefined
     latest.items = reset ? res.video_list : latest.items.concat(res.video_list)
   } catch (e) {
     latest.error = e instanceof ApiError ? e.message : String(e)
@@ -103,12 +103,12 @@ async function loadFollowing(reset: boolean) {
   following.error = ''
   const accountId = auth.claims?.account_id
   try {
-    const latest_time = reset ? 0 : following.next_time
-    const res = await feedApi.listByFollowing({ limit: following.limit, latest_time })
+    const limit = following.limit
+    const res = await feedApi.listByFollowing(reset || !following.cursor ? { limit } : { limit, ...following.cursor })
     if (auth.claims?.account_id !== accountId) return
     res.video_list.forEach(item => protectLike(item, true))
     following.has_more = res.has_more
-    following.next_time = res.next_time
+    following.cursor = res.next_id_before > 0 ? { latest_time: res.next_time, id_before: res.next_id_before } : undefined
     following.items = reset ? res.video_list : following.items.concat(res.video_list)
   } catch (e) {
     following.error = e instanceof ApiError ? e.message : String(e)
@@ -150,7 +150,7 @@ watch(
           <div class="row" style="justify-content: space-between">
             <div>
               <p class="title">最新流（listLatest）</p>
-              <div class="subtle">limit：{{ latest.limit }} · next_time：{{ latest.next_time }} · has_more：{{ latest.has_more }}</div>
+              <div class="subtle">limit：{{ latest.limit }} · next_time：{{ latest.cursor?.latest_time ?? 0 }} · next_id_before：{{ latest.cursor?.id_before ?? 0 }} · has_more：{{ latest.has_more }}</div>
             </div>
             <div class="row">
               <label class="subtle" style="margin: 0">limit</label>
@@ -208,7 +208,7 @@ watch(
             <div>
               <p class="title">关注流（listByFollowing，JWT）</p>
               <div class="subtle">
-                limit：{{ following.limit }} · next_time：{{ following.next_time }} · has_more：{{ following.has_more }}
+                limit：{{ following.limit }} · next_time：{{ following.cursor?.latest_time ?? 0 }} · next_id_before：{{ following.cursor?.id_before ?? 0 }} · has_more：{{ following.has_more }}
               </div>
             </div>
             <div class="row">

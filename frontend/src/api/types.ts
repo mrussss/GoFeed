@@ -60,9 +60,19 @@ export type FeedVideoItem = {
   is_liked: boolean
 }
 
+export type FeedTimeCursor = {
+  latest_time: number
+  id_before: number
+}
+
+export type ListTimeFeedRequest = { limit: number } & (
+  FeedTimeCursor | { latest_time?: never; id_before?: never }
+)
+
 export type ListLatestResponse = {
   video_list: FeedVideoItem[]
   next_time: number
+  next_id_before: number
   has_more: boolean
 }
 
@@ -83,11 +93,7 @@ export type ListByPopularityResponse = {
   next_latest_id_before?: number
 }
 
-export type ListByFollowingResponse = {
-  video_list: FeedVideoItem[]
-  next_time: number
-  has_more: boolean
-}
+export type ListByFollowingResponse = ListLatestResponse
 
 export type IsLikedResponse = {
   is_liked: boolean

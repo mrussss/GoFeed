@@ -3,9 +3,9 @@ package video
 import (
 	"context"
 	"errors"
-	"strconv"
 	"time"
 
+	"feedsystem_video_go/internal/feedindex"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 )
 
@@ -20,8 +20,8 @@ func UpdatePopularityCache(ctx context.Context, cache *rediscache.Client, id uin
 	invalidateErr := cache.Del(opCtx, cache.Key("video:detail:id=%d", id), cache.Key("video:entity:%d", id))
 
 	now := time.Now().UTC().Truncate(time.Minute)
-	windowKey := cache.Key("hot:video:1m:%s", now.Format("200601021504"))
-	member := strconv.FormatUint(uint64(id), 10)
+	windowKey := cache.Key(feedindex.PopularityBucketKey, now.Format(feedindex.PopularityMinuteFormat))
+	member := feedindex.PopularityMember(id)
 	incrementErr := cache.ZincrBy(opCtx, windowKey, member, float64(change))
 	expireErr := cache.Expire(opCtx, windowKey, 2*time.Hour)
 	return errors.Join(invalidateErr, incrementErr, expireErr)

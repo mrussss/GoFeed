@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"errors"
+	redis "github.com/redis/go-redis/v9"
 	"time"
 )
 
@@ -43,4 +44,21 @@ func (c *Client) MGet(cacheCtx context.Context, cacheKeys ...string) ([]interfac
 		return nil, errors.New("redis client not initialized")
 	}
 	return c.rdb.MGet(cacheCtx, cacheKeys...).Result()
+}
+
+// SetBytesBatch writes independent cache entries with a common TTL.
+func (c *Client) SetBytesBatch(ctx context.Context, values map[string][]byte, ttl time.Duration) error {
+	if len(values) == 0 {
+		return nil
+	}
+	if c == nil || c.rdb == nil {
+		return errors.New("redis client not initialized")
+	}
+	_, err := c.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for key, value := range values {
+			pipe.Set(ctx, key, value, ttl)
+		}
+		return nil
+	})
+	return err
 }

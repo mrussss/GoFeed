@@ -1,7 +1,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ApiError } from '../api/client'
 import * as feedApi from '../api/feed'
-import type { FeedVideoItem } from '../api/types'
+import type { FeedTimeCursor, FeedVideoItem } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { useLikeFollow } from './useLikeFollow'
 
@@ -15,7 +15,7 @@ export function useVideoFeed() {
   const recommend = reactive({
     items: [] as FeedVideoItem[],
     loading: false, error: '',
-    hasMore: false, nextTime: 0,
+    hasMore: false, cursor: undefined as FeedTimeCursor | undefined,
   })
 
   const hot = reactive({
@@ -29,7 +29,7 @@ export function useVideoFeed() {
   const following = reactive({
     items: [] as FeedVideoItem[],
     loading: false, error: '',
-    hasMore: false, nextTime: 0,
+    hasMore: false, cursor: undefined as FeedTimeCursor | undefined,
   })
 
   const currentState = computed(() => {
@@ -44,11 +44,11 @@ export function useVideoFeed() {
     recommend.error = ''
     const accountId = auth.claims?.account_id
     try {
-      const res = await feedApi.listLatest({ limit: 10, latest_time: reset ? 0 : recommend.nextTime })
+      const res = await feedApi.listLatest(reset || !recommend.cursor ? { limit: 10 } : { limit: 10, ...recommend.cursor })
       if (auth.claims?.account_id !== accountId) return
       res.video_list.forEach(item => protectLike(item, true))
       recommend.hasMore = res.has_more
-      recommend.nextTime = res.next_time
+      recommend.cursor = res.has_more ? { latest_time: res.next_time, id_before: res.next_id_before } : undefined
       recommend.items = reset ? res.video_list : recommend.items.concat(res.video_list)
     } catch (e) {
       recommend.error = e instanceof ApiError ? e.message : String(e)
@@ -93,11 +93,11 @@ export function useVideoFeed() {
     following.error = ''
     const accountId = auth.claims?.account_id
     try {
-      const res = await feedApi.listByFollowing({ limit: 10, latest_time: reset ? 0 : following.nextTime })
+      const res = await feedApi.listByFollowing(reset || !following.cursor ? { limit: 10 } : { limit: 10, ...following.cursor })
       if (auth.claims?.account_id !== accountId) return
       res.video_list.forEach(item => protectLike(item, true))
       following.hasMore = res.has_more
-      following.nextTime = res.next_time
+      following.cursor = res.has_more ? { latest_time: res.next_time, id_before: res.next_id_before } : undefined
       following.items = reset ? res.video_list : following.items.concat(res.video_list)
     } catch (e) {
       following.error = e instanceof ApiError ? e.message : String(e)

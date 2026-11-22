@@ -5,21 +5,24 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"time"
 
 	"feedsystem_video_go/internal/apierror"
 	"feedsystem_video_go/internal/config"
+	"feedsystem_video_go/internal/feedindex"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 
 	"gorm.io/gorm"
 )
 
 type VideoService struct {
-	repo          *VideoRepository
-	cache         *rediscache.Client
-	cacheTTL      time.Duration
-	followingFeed config.FollowingFeedConfig
+	repo           *VideoRepository
+	cache          *rediscache.Client
+	cacheTTL       time.Duration
+	followingFeed  config.FollowingFeedConfig
+	evictFeedVideo func(uint)
 }
 
 func NewVideoService(repo *VideoRepository, cache *rediscache.Client, followingFeed ...config.FollowingFeedConfig) *VideoService {
@@ -28,6 +31,11 @@ func NewVideoService(repo *VideoRepository, cache *rediscache.Client, followingF
 		thresholds = followingFeed[0]
 	}
 	return &VideoService{repo: repo, cache: cache, cacheTTL: 60 * time.Second, followingFeed: thresholds}
+}
+
+// SetFeedVideoEviction wires the router's process-local Feed cache before serving.
+func (vs *VideoService) SetFeedVideoEviction(evict func(uint)) {
+	vs.evictFeedVideo = evict
 }
 
 func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
@@ -122,8 +130,34 @@ func (vs *VideoService) Delete(ctx context.Context, id uint, authorID uint) erro
 		return err
 	}
 	if vs.cache != nil {
-		cacheKey := vs.cache.Key("video:detail:id=%d", id)
-		_ = vs.cache.Del(context.Background(), cacheKey)
+		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 50*time.Millisecond)
+		defer cancel()
+		if err := vs.cache.Del(cacheCtx, vs.cache.Key("video:detail:id=%d", id), vs.cache.Key("video:entity:%d", id)); err != nil {
+			log.Printf("delete video %d: Redis detail/entity eviction failed: %v", id, err)
+		}
+		publishedAt := video.CreateTime
+		var err error
+		if publishedAt.IsZero() {
+			// Legacy rows can lack create_time while their publish event has it.
+			var event OutboxMsg
+			err = vs.repo.db.WithContext(cacheCtx).Select("create_time").
+				Where("video_id = ? AND event_type = ?", id, "video_published").
+				Order("id").Take(&event).Error
+			publishedAt = event.CreateTime
+		}
+		if err == nil {
+			var member string
+			member, err = feedindex.FollowingMember(publishedAt.UnixMilli(), id)
+			if err == nil {
+				err = vs.cache.ZRem(cacheCtx, vs.cache.Key(feedindex.GlobalTimelineKey), member)
+			}
+		}
+		if err != nil {
+			log.Printf("delete video %d: Redis timeline eviction failed: %v", id, err)
+		}
+	}
+	if vs.evictFeedVideo != nil {
+		vs.evictFeedVideo(id)
 	}
 	return nil
 }

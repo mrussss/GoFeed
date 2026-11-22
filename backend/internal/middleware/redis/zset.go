@@ -47,6 +47,13 @@ func (c *Client) ZAdd(ctx context.Context, key string, members ...redis.Z) error
 	return c.rdb.ZAdd(ctx, key, members...).Err()
 }
 
+func (c *Client) ZRem(ctx context.Context, key string, member string) error {
+	if c == nil || c.rdb == nil {
+		return errors.New("redis client not initialized")
+	}
+	return c.rdb.ZRem(ctx, key, member).Err()
+}
+
 func (c *Client) ZRemRangeByRank(ctx context.Context, key string, start int64, stop int64) error {
 	if c == nil || c.rdb == nil {
 		return nil
@@ -93,14 +100,41 @@ func (c *Client) ZRevRange(ctx context.Context, key string, start, stop int64) (
 	return c.rdb.ZRevRange(ctx, key, start, stop).Result()
 }
 
-func (c *Client) ZRevRangeByScore(ctx context.Context, key string, max, min string, offset, count int64) ([]string, error) {
+// ZRevRangeByLexBatch reads each score-zero sorted set in descending member
+// order. A nonempty before member is excluded from every range.
+func (c *Client) ZRevRangeByLexBatch(ctx context.Context, keys []string, before string, count int64) ([][]string, error) {
 	if c == nil || c.rdb == nil {
-		return nil, nil
+		return nil, errors.New("redis client not initialized")
 	}
-	return c.rdb.ZRevRangeByScore(ctx, key, &redis.ZRangeBy{
-		Max:    max,
-		Min:    min,
-		Offset: offset,
-		Count:  count,
-	}).Result()
+	rangeBy := reverseLexRange(before, count)
+	ranges := make([]*redis.StringSliceCmd, 0, len(keys))
+	_, err := c.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for _, key := range keys {
+			ranges = append(ranges, pipe.ZRevRangeByLex(ctx, key, rangeBy))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	members := make([][]string, len(ranges))
+	for i, cmd := range ranges {
+		members[i] = cmd.Val()
+	}
+	return members, nil
+}
+
+func (c *Client) ZRevRangeByLex(ctx context.Context, key, before string, count int64) ([]string, error) {
+	if c == nil || c.rdb == nil {
+		return nil, errors.New("redis client not initialized")
+	}
+	return c.rdb.ZRevRangeByLex(ctx, key, reverseLexRange(before, count)).Result()
+}
+
+func reverseLexRange(before string, count int64) *redis.ZRangeBy {
+	max := "+"
+	if before != "" {
+		max = "(" + before
+	}
+	return &redis.ZRangeBy{Min: "-", Max: max, Count: count}
 }

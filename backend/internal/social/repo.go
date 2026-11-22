@@ -69,6 +69,15 @@ func (r *SocialRepository) GetAllFollowers(ctx context.Context, VloggerID uint) 
 	return followers, nil
 }
 
+func (r *SocialRepository) ListFollowedAuthorIDs(ctx context.Context, followerID uint) ([]uint, error) {
+	var authorIDs []uint
+	err := r.db.WithContext(ctx).Raw(
+		"SELECT vlogger_id FROM socials FORCE INDEX (idx_social_follower_vlogger) WHERE follower_id = ?",
+		followerID,
+	).Scan(&authorIDs).Error
+	return authorIDs, err
+}
+
 func (r *SocialRepository) GetAllVloggers(ctx context.Context, FollowerID uint) ([]*account.Account, error) {
 	var relations []Social
 	if err := r.db.WithContext(ctx).
