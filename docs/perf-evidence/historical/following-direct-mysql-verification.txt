@@ -1,0 +1,9 @@
+direct-scale-A-10000-10-1 1662/1674 contract-valid HTTP 200 500=8 503=4
+direct-scale-B-10000-10-1 3797/3811 contract-valid HTTP 200 500=0 503=14
+direct-scale-B-10000-10-2 3452/3547 contract-valid HTTP 200 500=0 503=95
+direct-scale-A-10000-10-2 1430/1435 contract-valid HTTP 200 500=0 503=5
+{'requests': 10467, 'success': 10341, 'http500': 8, 'http503': 118}
+4 timed rounds only. First three pages use MySQL-derived cursors in load and response-derived cursor chaining in preflight. Tail and empty page verified in preflight.
+Rates use all attempted HTTP requests. Successful RPS is contract-valid HTTP 200 per 20s. Pipeline timeout rate on B is N/A.
+MySQL CPU uses isolated container CPU delta per wall time. SQL cost uses prepared-statement Execute server timing and count; SQL ms/request is summed execution wait, not HTTP elapsed time.
+Eligibility: B gains P95 and throughput in both pairs, but raises HTTP 503 in both and MySQL CPU by over 2.5x; keep A.

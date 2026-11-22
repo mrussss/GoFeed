@@ -1,0 +1,188 @@
+--- a/backend/cmd/main.go
++++ b/backend/cmd/main.go
+@@ -2,14 +2,18 @@
+ 
+ import (
+ 	"context"
++	"encoding/json"
+ 	"feedsystem_video_go/internal/config"
+ 	"feedsystem_video_go/internal/db"
++	"feedsystem_video_go/internal/feed"
+ 	apphttp "feedsystem_video_go/internal/http"
+ 	rabbitmq "feedsystem_video_go/internal/middleware/rabbitmq"
+ 	rediscache "feedsystem_video_go/internal/middleware/redis"
+ 	"feedsystem_video_go/internal/observability"
+ 	"log"
++	"net/http"
+ 	"os"
++	"runtime/metrics"
+ 	"strconv"
+ 	"time"
+ 
+@@ -44,9 +48,24 @@
+ 	if err != nil {
+ 		log.Fatalf("Failed to connect database: %v", err)
+ 	}
+-	if err := db.AutoMigrate(sqlDB); err != nil {
+-		log.Fatalf("Failed to auto migrate database: %v", err)
++	// The experiment clones the already migrated fixture schema.
++	pool, err := sqlDB.DB()
++	if err != nil {
++		log.Fatal(err)
++	}
++	if open, err := strconv.Atoi(os.Getenv("LAB_OPEN")); err == nil {
++		pool.SetMaxOpenConns(open)
++	}
++	if idle, err := strconv.Atoi(os.Getenv("LAB_IDLE")); err == nil {
++		pool.SetMaxIdleConns(idle)
+ 	}
++	labMux := http.NewServeMux()
++	labMux.HandleFunc("/telemetry", func(w http.ResponseWriter, r *http.Request) {
++		alloc := []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}}
++		metrics.Read(alloc)
++		_ = json.NewEncoder(w).Encode(map[string]any{"pool": pool.Stats(), "feed": feed.LabMetrics(), "alloc": alloc[0].Value.Uint64()})
++	})
++	go func() { log.Print(http.ListenAndServe("127.0.0.1:36064", labMux)) }()
+ 	defer db.CloseDB(sqlDB)
+ 
+ 	// 连接 Redis (可选，用于缓存)
+--- a/backend/internal/feed/read_budget.go
++++ b/backend/internal/feed/read_budget.go
+@@ -21,8 +21,8 @@
+ 
+ func newFeedReadBudget() feedReadBudget {
+ 	return feedReadBudget{
+-		active:  make(chan struct{}, feedReadConcurrency),
+-		waiting: make(chan struct{}, feedReadConcurrency),
++		active:  make(chan struct{}, labInt("LAB_ACTIVE", feedReadConcurrency)),
++		waiting: make(chan struct{}, labInt("LAB_WAITERS", feedReadConcurrency)),
+ 	}
+ }
+ 
+@@ -42,7 +42,7 @@
+ 		return ErrFeedReadOverloaded
+ 	}
+ 
+-	timer := time.NewTimer(feedReadWait)
++	timer := time.NewTimer(labAdmissionWait)
+ 	defer timer.Stop()
+ 	select {
+ 	case budget.active <- struct{}{}:
+@@ -61,14 +61,27 @@
+ // assembly outside the budget.
+ func readFeedMySQL[T any](ctx context.Context, budget feedReadBudget, query func(context.Context) (T, error)) (T, error) {
+ 	var zero T
+-	if err := budget.acquire(ctx); err != nil {
+-		return zero, err
++	if !labBypass {
++		start := time.Now()
++		err := budget.acquire(ctx)
++		labWaitNS.Add(int64(time.Since(start)))
++		if err != nil {
++			if errors.Is(err, ErrFeedReadOverloaded) {
++				labShed.Add(1)
++			}
++			return zero, err
++		}
++		defer func() { <-budget.active }()
+ 	}
+-	defer func() { <-budget.active }()
+ 	if err := ctx.Err(); err != nil {
+ 		return zero, err
+ 	}
+ 	queryCtx, cancel := context.WithTimeout(ctx, feedQueryTimeout)
+ 	defer cancel()
+-	return query(queryCtx)
++	defer labBegin()()
++	value, err := query(queryCtx)
++	if errors.Is(queryCtx.Err(), context.DeadlineExceeded) {
++		labTimeout.Add(1)
++	}
++	return value, err
+ }
+--- a/backend/internal/feed/following.go
++++ b/backend/internal/feed/following.go
+@@ -44,9 +44,12 @@
+ 		}
+ 	}
+ 	cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
++	started := time.Now()
+ 	sources, err := f.rediscache.ZRevRangeByLexBatch(cacheCtx, keys, before, int64(count))
++	labRecordPipeline(started, sources, err, cacheCtx.Err())
+ 	cancel()
+ 	if err != nil {
++		labFollowFallback.Add(1)
+ 		return f.followingFromMySQL(ctx, count, viewerID, cursor)
+ 	}
+ 
+@@ -61,6 +64,7 @@
+ 
+ 	// There can be unindexed rows anywhere below the request cursor. Read the
+ 	// whole DB prefix so a missing recent row can also precede a Redis row.
++	labFollowFill.Add(1)
+ 	history, err := f.followingFromMySQL(ctx, count, viewerID, cursor)
+ 	if err != nil {
+ 		return nil, err
+--- /dev/null
++++ b/backend/internal/feed/lab.go
+@@ -0,0 +1,60 @@
++package feed
++
++import (
++	"context"
++	"errors"
++	"net"
++	"os"
++	"strconv"
++	"sync/atomic"
++	"time"
++)
++
++var labBypass = os.Getenv("LAB_BUDGET") == "off"
++var labAdmissionWait = time.Duration(labInt("LAB_WAIT_MS", int(feedReadWait/time.Millisecond))) * time.Millisecond
++
++func labInt(name string, fallback int) int {
++	if value, err := strconv.Atoi(os.Getenv(name)); err == nil && value >= 0 {
++		return value
++	}
++	return fallback
++}
++
++var labRunning, labPeak, labEntered, labTimeout, labWaitNS, labShed atomic.Int64
++var labPipe, labPipeError, labPipeTimeout, labPipeNS, labCandidates, labFollowFallback, labFollowFill atomic.Int64
++
++func labBegin() func() {
++	labEntered.Add(1)
++	n := labRunning.Add(1)
++	for peak := labPeak.Load(); n > peak && !labPeak.CompareAndSwap(peak, n); peak = labPeak.Load() {
++	}
++	return func() { labRunning.Add(-1) }
++}
++
++func labRecordPipeline(start time.Time, sources [][]string, err error, ctxErr error) {
++	labPipe.Add(1)
++	labPipeNS.Add(int64(time.Since(start)))
++	if err != nil {
++		labPipeError.Add(1)
++		var timeout net.Error
++		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctxErr, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) {
++			labPipeTimeout.Add(1)
++		}
++		return
++	}
++	var n int64
++	for _, member := range sources {
++		n += int64(len(member))
++	}
++	labCandidates.Add(n)
++}
++
++func LabMetrics() map[string]int64 {
++	return map[string]int64{
++		"feed_active": labRunning.Load(), "feed_peak": labPeak.Load(), "feed_entered": labEntered.Load(),
++		"feed_timeout": labTimeout.Load(), "admit_ns": labWaitNS.Load(), "shed": labShed.Load(),
++		"pipe": labPipe.Load(), "pipe_error": labPipeError.Load(), "pipe_timeout": labPipeTimeout.Load(),
++		"pipe_ns": labPipeNS.Load(), "pipe_candidates": labCandidates.Load(),
++		"follow_fallback": labFollowFallback.Load(), "follow_fill": labFollowFill.Load(),
++	}
++}

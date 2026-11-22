@@ -1,0 +1,15 @@
+workload,strategy,attempt,formal_measurement,valid,reason
+read_heavy,push,1,no,no,Warmup stopped after global timeline writes polluted the completion counter
+read_heavy,push,2,yes,no,All scheduled operations finished but the index audit treated the global timeline key as an unexpected Following key
+read_heavy,push,3,yes,yes,First valid sample in hybrid-rounds.csv
+read_heavy,push,4,yes,yes,Second valid sample in hybrid-rounds.csv; outside the conservative three-attempt limit that includes the warmup failure
+read_heavy,pull,1,yes,yes,
+read_heavy,pull,2,yes,yes,
+read_heavy,hybrid,1,yes,yes,
+read_heavy,hybrid,2,yes,yes,
+write_heavy,push,1,yes,yes,
+write_heavy,push,2,yes,yes,
+write_heavy,pull,1,yes,yes,
+write_heavy,pull,2,yes,yes,
+write_heavy,hybrid,1,yes,yes,
+write_heavy,hybrid,2,yes,yes,

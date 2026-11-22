@@ -1,0 +1,9 @@
+{
+  "commands": 60000,
+  "pairs": 1000,
+  "sha256": "15023070c4f2190d5c7b65806f750feb458dd16f25440491614fd5f07aa7958c",
+  "intent_sha256": "f2513032107df0b004c38780512697140da179ce4d33d10e69e94a61c72a0dd6",
+  "video_distribution": {
+    "1": 60000
+  }
+}

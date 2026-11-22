@@ -1,0 +1,155 @@
+[
+  {
+    "scene": "uniform",
+    "rate": 100,
+    "input": 7500,
+    "ack": 100.01666666666667,
+    "sql": 2.2552907848691883,
+    "p95": 37.333504,
+    "locks": 0,
+    "lock_time": 0,
+    "ready": 0,
+    "peak_by_partition": {
+      "0": {
+        "ready_max": 0,
+        "unacked_max": 4
+      },
+      "1": {
+        "ready_max": 0,
+        "unacked_max": 2
+      },
+      "2": {
+        "ready_max": 0,
+        "unacked_max": 2
+      },
+      "3": {
+        "ready_max": 0,
+        "unacked_max": 4
+      }
+    },
+    "lock_deltas": {
+      "lock_deadlocks": 0,
+      "lock_timeouts": 0
+    },
+    "actual_input": 99.9993763425572,
+    "partitions": {
+      "p0": 1858,
+      "p1": 1852,
+      "p2": 1922,
+      "p3": 1868
+    },
+    "intent_sha256": "a8f69125fe49c3c9cf24aaac396d719a347d0b975ddcf52fc479a74e7d758d65",
+    "samples": 19,
+    "sample_errors": 0,
+    "mean_batch": 1.5787950539331754,
+    "original": {
+      "ack_rate": 100.0,
+      "sql_per_command": 2.268032650341496,
+      "tx_p95": 35.56361515,
+      "locks_waited": 0,
+      "ready": 0
+    }
+  },
+  {
+    "scene": "zipf",
+    "rate": 400,
+    "input": 30000,
+    "ack": 400.0833333333333,
+    "sql": 1.080149968756509,
+    "p95": 45.09951990000001,
+    "locks": 0,
+    "lock_time": 0,
+    "ready": 0,
+    "peak_by_partition": {
+      "0": {
+        "ready_max": 0,
+        "unacked_max": 26
+      },
+      "1": {
+        "ready_max": 0,
+        "unacked_max": 6
+      },
+      "2": {
+        "ready_max": 0,
+        "unacked_max": 46
+      },
+      "3": {
+        "ready_max": 0,
+        "unacked_max": 39
+      }
+    },
+    "lock_deltas": {
+      "lock_deadlocks": 0,
+      "lock_timeouts": 0
+    },
+    "actual_input": 399.89069929877104,
+    "partitions": {
+      "p0": 6202,
+      "p1": 5677,
+      "p2": 10711,
+      "p3": 7410
+    },
+    "intent_sha256": "5c29e32db9151d3193f977042f8fb089631d30e2c4b6b042ceb53c78cede6592",
+    "samples": 19,
+    "sample_errors": 0,
+    "mean_batch": 5.201516793066089,
+    "original": {
+      "ack_rate": 399.93333333333334,
+      "sql_per_command": 1.0952777893552286,
+      "tx_p95": 44.2740387,
+      "locks_waited": 0,
+      "ready": 0
+    }
+  },
+  {
+    "scene": "single",
+    "rate": 800,
+    "input": 60000,
+    "ack": 798.45,
+    "sql": 0.08685578307971695,
+    "p95": 29.6032093,
+    "locks": 0,
+    "lock_time": 0,
+    "ready": 48,
+    "peak_by_partition": {
+      "0": {
+        "ready_max": 0,
+        "unacked_max": 0
+      },
+      "1": {
+        "ready_max": 0,
+        "unacked_max": 0
+      },
+      "2": {
+        "ready_max": 48,
+        "unacked_max": 50
+      },
+      "3": {
+        "ready_max": 0,
+        "unacked_max": 0
+      }
+    },
+    "lock_deltas": {
+      "lock_deadlocks": 0,
+      "lock_timeouts": 0
+    },
+    "actual_input": 798.3493712459319,
+    "partitions": {
+      "p0": 0,
+      "p1": 0,
+      "p2": 60000,
+      "p3": 0
+    },
+    "intent_sha256": "f2513032107df0b004c38780512697140da179ce4d33d10e69e94a61c72a0dd6",
+    "samples": 19,
+    "sample_errors": 0,
+    "mean_batch": 34.54001441961067,
+    "original": {
+      "ack_rate": 798.1,
+      "sql_per_command": 0.08873798579189301,
+      "tx_p95": 28.7292105,
+      "locks_waited": 0,
+      "ready": 47
+    }
+  }
+]

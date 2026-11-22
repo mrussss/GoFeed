@@ -1,0 +1,8 @@
+=== RUN   TestFollowingFullIndexPageCoverageMySQL
+    following_evidence_test.go:64: page 1: ids=[80112 80111] has_more=true next_id=80111
+    following_evidence_test.go:64: page 2: ids=[80110] has_more=false next_id=80110
+    following_evidence_test.go:71: Following cursor chain = [80112 80111 80110], independent MySQL order = [80113 80112 80111 80110]
+--- FAIL: TestFollowingFullIndexPageCoverageMySQL (0.17s)
+FAIL
+FAIL	feedsystem_video_go/internal/feed	0.181s
+FAIL

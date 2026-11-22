@@ -1,0 +1,15 @@
+Verified 8 timed rounds, 2 per cell, fixed 10 VU, 20 seconds. First raw round retained after CSV reporter fix.
+Every HTTP 200 passed expected IDs, order, has_more, next_time and next_id_before.
+Pipeline errors were timeouts, every timeout entered the fallback branch, no historical fill occurred.
+Full SQL rate is admitted repository calls / pipeline attempts. Redis bytes are instance output; CPU 100% is one core.
+Build sources differ by the Following Pipeline timeout only. Both use production 16/8 and FallbackOnly.
+authors timeout repeat timeout_percent fallback_branch_percent full_sql_percent success_p95 success_p99 success_rps failure_percent mysql_cpu_percent redis_kib_per_request go_alloc_kib_per_request returned_candidates_per_completed_pipeline
+5000 50 1 80.77 80.77 79.93 126.69 134.38 100.05 0.84 273.73 476.87 3626.53 15011.00
+5000 50 2 93.21 93.21 93.02 159.52 180.81 79.40 0.19 337.19 447.89 3547.01 15011.00
+5000 100 1 27.90 27.90 27.66 180.22 194.96 82.95 0.24 102.61 604.46 3967.11 15011.00
+5000 100 2 36.98 36.98 36.98 172.84 179.91 80.45 0.00 111.26 609.94 3956.67 15011.00
+10000 50 1 99.17 99.17 98.43 218.11 248.50 53.90 0.74 521.40 584.26 6766.31 30011.00
+10000 50 2 100.00 100.00 99.03 284.55 300.63 41.05 0.97 574.20 477.26 6551.07 0.00
+10000 100 1 96.94 96.94 96.00 278.48 294.34 42.05 0.94 390.13 783.46 7146.36 30011.00
+10000 100 2 99.39 99.39 99.15 282.66 300.39 40.90 0.24 404.33 768.04 7110.07 30011.00
+Count: 10465

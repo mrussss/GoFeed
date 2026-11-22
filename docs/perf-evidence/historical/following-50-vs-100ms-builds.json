@@ -1,0 +1,11 @@
+{
+  "commit": "689490bbfbf7360690aefb22c2243c372fbcc3eb",
+  "builds": {
+    "50": {
+      "sha256": "3bbe3cb0f2520f078d1244fb04623ce461b35165e73cb90d3cb518fa018ec8fe"
+    },
+    "100": {
+      "sha256": "741660c629f1022ae4f18cca27b24015bc23cfba2b49c6062ed53a8125f8e281"
+    }
+  }
+}

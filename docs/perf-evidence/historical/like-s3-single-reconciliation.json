@@ -1,0 +1,14 @@
+{
+  "verified": true,
+  "errors": [],
+  "commands": 60000,
+  "expected_unique_accepted": null,
+  "pairs": 1000,
+  "users": 1000,
+  "expected_active_likes": 99998,
+  "videos": 10000,
+  "hot_video_ids_1_to_100_commands": 60000,
+  "video_distribution": {
+    "1": 60000
+  }
+}
