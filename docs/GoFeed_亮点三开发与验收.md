@@ -211,7 +211,7 @@ Latest Redis 候选查询和重建回填调用使用 50 ms 子 Context。运行�
 
 ### 最终调整
 
-采用专项实验中的 16/8 连接池与 `FallbackOnly` 保护范围。API 在 `db.NewDB` 返回后、迁移与路由初始化前，在底层 `sql.DB` 上设置 `SetMaxOpenConns(16)` 和 `SetMaxIdleConns(8)`。Worker 进程仍直接调用 `db.NewDB`，使用自己的默认池。连接池与 Feed 预算专项实验的详细报告仅保存在本地实验材料中，未纳入本仓库；此处记录最终生效的代码配置与结论。
+采用专项实验中的 16/8 连接池与 `FallbackOnly` 保护范围。API 在 `db.NewDB` 返回后、迁移与路由初始化前，在底层 `sql.DB` 上设置 `SetMaxOpenConns(16)` 和 `SetMaxIdleConns(8)`。Worker 进程仍直接调用 `db.NewDB`，使用自己的默认池。参见 [连接池与 Feed 预算专项实验](GoFeed_模块4_MySQL连接池与Feed预算专项实验.md)。
 
 | SQL 路径 | 执行方式 |
 | --- | --- |

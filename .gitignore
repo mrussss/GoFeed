@@ -2,7 +2,16 @@
 backend/.run/
 data/
 .sisyphus/
-docs/
+/docs/*
+!/docs/GoFeedBaselineSmall数据导入报告.md
+!/docs/GoFeedFeedAPI功能验证准备报告.md
+!/docs/GoFeed_模块4_MySQL连接池与Feed预算专项实验.md
+!/docs/GoFeed_点赞链路性能与缓存对照实验.md
+!/docs/GoFeed原项目基线测试准备报告.md
+!/docs/GoFeed原项目性能基线报告.md
+!/docs/GoFeed基线测试数据集设计方案.md
+!/docs/GoFeed基线测试数据集设计方案v2.md
+!/docs/GoFeed数据库导入前核验报告.md
 
 #
 # Binaries for programs and plugins
