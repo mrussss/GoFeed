@@ -52,7 +52,7 @@
 
 本轮覆盖首屏、固定并发和静态数据。Following 仅使用一个测试账号，Popularity 热榜使用合成分钟桶。结果可在相同配置下用于后续对比，深分页、多账号混合、写入并发、冷缓存和 Redis 故障场景均未纳入本轮压测。既有独立评估及历史基线仅用于参考，本表使用本轮采集的数据。
 
-本地保留 [正式测量原始记录](../data/feed-read-reliability/module0-c628b0f/measured/)，包含各场景的 k6 JSON、预检响应、MySQL 计数快照、适配脚本和配置。启动覆盖配置、导入 SQL、首轮数据和计数校准记录也保存在 [本轮实验目录](../data/feed-read-reliability/module0-c628b0f/)。
+本地保留 正式测量原始记录（本地 `data/feed-read-reliability/module0-c628b0f/measured/`，未入库），包含各场景的 k6 JSON、预检响应、MySQL 计数快照、适配脚本和配置。启动覆盖配置、导入 SQL、首轮数据和计数校准记录也保存在 本轮实验目录（本地 `data/feed-read-reliability/module0-c628b0f/`，未入库）。
 
 ## 模块 1 · 排序契约与双字段游标
 
@@ -131,7 +131,7 @@ Following 在现有 Redis 索引范围内读取，并按需通过 MySQL 补齐�
 
 Popularity 的 A/B API 从同一份删除修复源码构建。临时 B 仅绕过快照的存在性 SQL，正式分支保留 A。A/B 交替运行，每种配置各 3 轮，10 VU、配置 20 秒。所有轮次使用同一快照、同一 `as_of`、同样的十条结果和暖缓存。Following 从 50、500、5,000、10,000 作者逐级执行，1 VU 为主，并在代表规模复测 10 VU。所有场景页大小为 10。
 
-P50/P95/P99、RPS 取 k6 原始汇总，再对各轮各自的指标取中位数。SQL 数量取专用实例 `Com_select` 前后差，扣除两条采样开销，通过 `Com_stmt_execute` 增量交叉核对。SQL 耗时使用 MySQL Performance Schema 的 prepared execute 计时差除以请求数。MySQL CPU 是每轮 Docker 采样中位数，再取轮间中位数，100% 表示一个逻辑核。Redis 命令数取 `commandstats`，候选条数由固定来源长度和执行的 Lex 命令数核对，Redis 出站字节使用 INFO 差值。Go 分配采用进程 `TotalAlloc` 差值，进程峰值 RSS 取 Linux `VmHWM`。原始 JSON、脚本和剖析样本保留在 [本地实验目录](../data/feed-read-reliability/read-review/)。
+P50/P95/P99、RPS 取 k6 原始汇总，再对各轮各自的指标取中位数。SQL 数量取专用实例 `Com_select` 前后差，扣除两条采样开销，通过 `Com_stmt_execute` 增量交叉核对。SQL 耗时使用 MySQL Performance Schema 的 prepared execute 计时差除以请求数。MySQL CPU 是每轮 Docker 采样中位数，再取轮间中位数，100% 表示一个逻辑核。Redis 命令数取 `commandstats`，候选条数由固定来源长度和执行的 Lex 命令数核对，Redis 出站字节使用 INFO 差值。Go 分配采用进程 `TotalAlloc` 差值，进程峰值 RSS 取 Linux `VmHWM`。原始 JSON、脚本和剖析样本保留在 本地实验目录（`data/feed-read-reliability/read-review/`，未入库）。
 
 ### Popularity 存在性 SQL 对照
 
@@ -211,7 +211,7 @@ Latest Redis 候选查询和重建回填调用使用 50 ms 子 Context。运行�
 
 ### 最终调整
 
-采用专项实验中的 16/8 连接池与 `FallbackOnly` 保护范围。API 在 `db.NewDB` 返回后、迁移与路由初始化前，在底层 `sql.DB` 上设置 `SetMaxOpenConns(16)` 和 `SetMaxIdleConns(8)`。Worker 进程仍直接调用 `db.NewDB`，使用自己的默认池。参见 [连接池与 Feed 预算专项实验](GoFeed_模块4_MySQL连接池与Feed预算专项实验.md)。
+采用专项实验中的 16/8 连接池与 `FallbackOnly` 保护范围。API 在 `db.NewDB` 返回后、迁移与路由初始化前，在底层 `sql.DB` 上设置 `SetMaxOpenConns(16)` 和 `SetMaxIdleConns(8)`。Worker 进程仍直接调用 `db.NewDB`，使用自己的默认池。连接池与 Feed 预算专项实验的详细报告仅保存在本地实验材料中，未纳入本仓库；此处记录最终生效的代码配置与结论。
 
 | SQL 路径 | 执行方式 |
 | --- | --- |
@@ -267,7 +267,7 @@ Following HTTP + JWT
   → 返回下一页游标
 ```
 
-每路候选已经有序，最大堆只保存各来源当前位置，弹出全局最新的成员后仅推进对应来源。Latest 复用同一时间与 ID 排序，通过新版全局时间线查热数据并按需合并 MySQL。LikesCount 保留点赞数与 ID 作为排序元组，Popularity 保留 Redis 热榜快照与 MySQL 热度、时间、ID 游标。共用的 DB 预算按单条 Feed SQL 计费，并发 8，等待队列 8，入场等待最多 20 ms，单查询期限 250 ms，预算耗尽返回 503。认证的数据库兜底发生在此预算之前。
+每路候选已经有序，最大堆只保存各来源当前位置，弹出全局最新的成员后仅推进对应来源。Latest 复用同一时间与 ID 排序，通过新版全局时间线查热数据并按需合并 MySQL。LikesCount 保留点赞数与 ID 作为排序元组，Popularity 保留 Redis 热榜快照与 MySQL 热度、时间、ID 游标。本模块 6 的性能数据来自当时的全量 SQL 预算实现：每条 Feed SQL 先获取共享额度（执行 8、等待 8、最多等待 20 ms），单条 SQL 查询期限 250 ms，额度耗尽返回 503；认证的数据库兜底发生在该预算之前。其后「模块 4 · 最终调整」已将 Semaphore 收窄至 FallbackOnly，并将 API MySQL 连接池改为 16/8。因此下面的历史性能数据不能直接视为最终代码版本的性能。
 
 ### 对照口径
 
@@ -275,7 +275,7 @@ Following HTTP + JWT
 
 旧版和新版有各自独立的 Redis DB 10、11。Latest、Popularity 对两版预置相同候选 ID，按各版格式编码。新版 Following 预置对应 Inbox 与完整可用的作者候选，旧版按原有机制生成整页缓存。每轮均从新进程开始，两次预检核对返回的实际 Top 10，并预热各版本实际使用的读取路径。请求使用同样的首屏参数。每版每场景三轮，轮换版本顺序，10 VU、配置 20 秒，采用现有 k6 固定并发模型。Redis 停启实验在同一进程内验证 Redis 连接恢复，正常、停机和恢复均为 10 VU、6 秒，过载阶段以 32 VU 施压 6 秒，并在每轮开头短时持有隔离 Schema 的视频表写锁。
 
-延迟为每轮各分位数的轮间中位数，包含该轮错误请求；有效吞吐为 k6 总 RPS 乘请求成功率。SQL 数量用专用实例的 `Com_stmt_execute` 增量核对，原始 `Com_select` 也保留用于交叉核验。活跃连接峰值是 50 ms 周期采样到的 API MySQL 连接池 `InUse` 最大值，连接池等待取 `WaitDuration` 增量。数据库内部另从 Performance Schema 记录 MDL 等待。Redis 内存通过 `MEMORY USAGE` 对各实验 DB 的键按索引分类求和。原始 k6 汇总、每轮计数与配置见 [模块 6 本地原始记录](../data/feed-read-reliability/module6/)。
+延迟为每轮各分位数的轮间中位数，包含该轮错误请求；有效吞吐为 k6 总 RPS 乘请求成功率。SQL 数量用专用实例的 `Com_stmt_execute` 增量核对，原始 `Com_select` 也保留用于交叉核验。活跃连接峰值是 50 ms 周期采样到的 API MySQL 连接池 `InUse` 最大值，连接池等待取 `WaitDuration` 增量。数据库内部另从 Performance Schema 记录 MDL 等待。Redis 内存通过 `MEMORY USAGE` 对各实验 DB 的键按索引分类求和。原始 k6 汇总、每轮计数与配置见 模块 6 本地原始记录（`data/feed-read-reliability/module6/`，未入库）。
 
 ### 正常 Redis 下的四场景对照
 
