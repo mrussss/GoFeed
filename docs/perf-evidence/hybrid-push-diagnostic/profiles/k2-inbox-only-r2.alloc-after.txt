@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:02 CST
+Showing nodes accounting for 36037.28kB, 86.48% of 41669.48kB total
+Showing top 25 nodes out of 138
+      flat  flat%   sum%        cum   cum%
+ 7171.07kB 17.21% 17.21%  7683.15kB 18.44%  gorm.io/gorm.(*Statement).clone
+ 5122.42kB 12.29% 29.50%  5634.45kB 13.52%  gorm.io/gorm.(*Statement).AddClause
+ 2560.30kB  6.14% 35.65%  5120.72kB 12.29%  database/sql.(*DB).queryDC
+ 2560.27kB  6.14% 41.79%  7169.40kB 17.21%  gorm.io/gorm.(*Statement).AddVar
+ 2051.34kB  4.92% 46.71%  2051.34kB  4.92%  reflect.unsafe_NewArray
+ 1184.27kB  2.84% 49.56%  1184.27kB  2.84%  runtime/pprof.StartCPUProfile
+    1026kB  2.46% 52.02%     1026kB  2.46%  runtime.allocm
+ 1024.28kB  2.46% 54.48%  2560.45kB  6.14%  feedsystem_video_go/internal/feed.(*FeedService).GetVideoByIDs
+ 1024.26kB  2.46% 56.93%  1024.26kB  2.46%  database/sql.driverArgsConnLocked
+ 1024.19kB  2.46% 59.39%  4097.38kB  9.83%  gorm.io/gorm.(*DB).Session
+ 1024.16kB  2.46% 61.85%  1024.16kB  2.46%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+ 1024.15kB  2.46% 64.31% 18949.56kB 45.48%  feedsystem_video_go/internal/feed.(*FeedRepository).followingCandidateTimes
+ 1024.14kB  2.46% 66.77%  1536.17kB  3.69%  feedsystem_video_go/internal/feed.(*FeedService).localVideo
+ 1024.05kB  2.46% 69.22%  1024.05kB  2.46%  github.com/redis/go-redis/v9/internal/proto.(*Reader).readStringReply
+ 1024.05kB  2.46% 71.68%  9729.55kB 23.35%  gorm.io/gorm/callbacks.BuildQuerySQL
+ 1024.02kB  2.46% 74.14%  1024.02kB  2.46%  reflect.New
+  902.59kB  2.17% 76.30%  1553.21kB  3.73%  compress/flate.NewWriter
+  650.62kB  1.56% 77.87%   650.62kB  1.56%  compress/flate.(*compressor).init
+  518.65kB  1.24% 79.11%   518.65kB  1.24%  runtime/pprof.(*profileBuilder).stringIndex
+  512.14kB  1.23% 80.34% 22534.21kB 54.08%  feedsystem_video_go/internal/feed.(*FeedService).loadFollowingCandidates
+  512.10kB  1.23% 81.57%   512.10kB  1.23%  context.(*cancelCtx).propagateCancel
+  512.05kB  1.23% 82.80%   512.05kB  1.23%  context.WithDeadlineCause
+  512.05kB  1.23% 84.03%   512.05kB  1.23%  github.com/redis/go-redis/v9.NewStringSliceCmd
+  512.05kB  1.23% 85.25%   512.05kB  1.23%  strings.(*Builder).grow
+  512.05kB  1.23% 86.48%   512.05kB  1.23%  github.com/go-sql-driver/mysql.(*mysqlConn).startWatcher.func1

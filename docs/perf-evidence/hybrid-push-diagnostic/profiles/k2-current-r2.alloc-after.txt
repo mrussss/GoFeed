@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:07 CST
+Showing nodes accounting for 33980.80kB, 86.91% of 39101.04kB total
+Showing top 25 nodes out of 147
+      flat  flat%   sum%        cum   cum%
+ 7170.86kB 18.34% 18.34%  7682.94kB 19.65%  gorm.io/gorm.(*Statement).clone
+ 3073.84kB  7.86% 26.20%  3073.84kB  7.86%  gorm.io/gorm.(*Statement).AddClause
+ 2564.35kB  6.56% 32.76%  2564.35kB  6.56%  reflect.unsafe_NewArray
+ 2048.13kB  5.24% 38.00%  2560.14kB  6.55%  feedsystem_video_go/internal/middleware/redis.(*Client).Key (inline)
+ 1805.17kB  4.62% 42.61%  3106.42kB  7.94%  compress/flate.NewWriter (inline)
+ 1537.88kB  3.93% 46.55%  8711.17kB 22.28%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+ 1536.67kB  3.93% 50.48%  2048.68kB  5.24%  database/sql.driverArgsConnLocked
+ 1536.28kB  3.93% 54.41%  4098.87kB 10.48%  gorm.io/gorm.(*DB).Scan
+ 1536.24kB  3.93% 58.33%  1536.24kB  3.93%  github.com/go-sql-driver/mysql.(*mysqlConn).readColumns
+ 1301.24kB  3.33% 61.66%  1301.24kB  3.33%  compress/flate.(*compressor).init
+ 1045.57kB  2.67% 64.34%  2598.78kB  6.65%  runtime/pprof.(*profileBuilder).emitLocation
+ 1024.16kB  2.62% 66.96%  1024.16kB  2.62%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+ 1024.13kB  2.62% 69.57%  3072.85kB  7.86%  gorm.io/gorm.(*Statement).AddVar
+ 1024.06kB  2.62% 72.19%  6145.16kB 15.72%  database/sql.(*DB).queryDC
+  578.66kB  1.48% 73.67%   578.66kB  1.48%  runtime/pprof.StartCPUProfile
+  561.50kB  1.44% 75.11% 35477.21kB 90.73%  feedsystem_video_go/internal/feed.TestPushDiagnosticRound
+  514.38kB  1.32% 76.43%   514.38kB  1.32%  sync.(*Pool).pinSlow
+     513kB  1.31% 77.74%      513kB  1.31%  runtime.allocm
+  512.14kB  1.31% 79.05% 12804.59kB 32.75%  feedsystem_video_go/internal/feed.(*FeedRepository).followingCandidateTimes
+  512.14kB  1.31% 80.36% 16388.96kB 41.91%  feedsystem_video_go/internal/feed.(*FeedService).loadFollowingCandidates
+  512.10kB  1.31% 81.67%   512.10kB  1.31%  context.(*cancelCtx).propagateCancel
+  512.09kB  1.31% 82.98%   512.09kB  1.31%  github.com/redis/go-redis/v9.(*StringSliceCmd).readReply
+  512.07kB  1.31% 84.29%  6658.91kB 17.03%  feedsystem_video_go/internal/feed.(*FeedRepository).followingVideos
+  512.07kB  1.31% 85.60%  2560.18kB  6.55%  feedsystem_video_go/internal/feed.(*FeedService).localVideo
+  512.06kB  1.31% 86.91%   512.06kB  1.31%  strings.(*Builder).WriteByte (inline)

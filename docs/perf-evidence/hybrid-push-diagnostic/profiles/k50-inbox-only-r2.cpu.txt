@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:21 CST
+Duration: 4.14s, Total samples = 740ms (17.86%)
+Showing nodes accounting for 640ms, 86.49% of 740ms total
+Showing top 25 nodes out of 218
+      flat  flat%   sum%        cum   cum%
+     260ms 35.14% 35.14%      260ms 35.14%  runtime.futex
+     110ms 14.86% 50.00%      110ms 14.86%  internal/runtime/syscall.Syscall6
+      40ms  5.41% 55.41%       40ms  5.41%  runtime.write1
+      20ms  2.70% 58.11%       30ms  4.05%  runtime.stealWork
+      10ms  1.35% 59.46%       10ms  1.35%  bufio.(*Writer).Flush
+      10ms  1.35% 60.81%      130ms 17.57%  database/sql.ctxDriverStmtQuery
+      10ms  1.35% 62.16%       10ms  1.35%  feedsystem_video_go/internal/feed.TestPushDiagnosticRound.func3
+      10ms  1.35% 63.51%       10ms  1.35%  fmt.(*pp).fmtInteger
+      10ms  1.35% 64.86%       10ms  1.35%  fmt.(*pp).printValue
+      10ms  1.35% 66.22%      140ms 18.92%  github.com/go-sql-driver/mysql.(*mysqlConn).readPacket
+      10ms  1.35% 67.57%       30ms  4.05%  github.com/redis/go-redis/v9.(*baseClient).pipelineReadCmds
+      10ms  1.35% 68.92%       10ms  1.35%  github.com/redis/go-redis/v9/internal/pool.(*ConnPool).putConn
+      10ms  1.35% 70.27%       20ms  2.70%  github.com/redis/go-redis/v9/push.(*Processor).ProcessPendingNotifications
+      10ms  1.35% 71.62%       10ms  1.35%  reflect.Value.Set
+      10ms  1.35% 72.97%       10ms  1.35%  reflect.Value.extendSlice
+      10ms  1.35% 74.32%       10ms  1.35%  runtime.(*itabTableType).find
+      10ms  1.35% 75.68%       10ms  1.35%  runtime.acquireSudog
+      10ms  1.35% 77.03%       10ms  1.35%  runtime.casgstatus
+      10ms  1.35% 78.38%       10ms  1.35%  runtime.chansend
+      10ms  1.35% 79.73%       10ms  1.35%  runtime.checkIdleGCNoP
+      10ms  1.35% 81.08%       10ms  1.35%  runtime.execute
+      10ms  1.35% 82.43%       20ms  2.70%  runtime.getitab
+      10ms  1.35% 83.78%       40ms  5.41%  runtime.mallocgc
+      10ms  1.35% 85.14%       10ms  1.35%  runtime.mallocgcTiny
+      10ms  1.35% 86.49%       10ms  1.35%  runtime.memclrNoHeapPointers

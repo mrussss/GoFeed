@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:29 CST
+Duration: 4.12s, Total samples = 1.19s (28.90%)
+Showing nodes accounting for 0.83s, 69.75% of 1.19s total
+Showing top 25 nodes out of 299
+      flat  flat%   sum%        cum   cum%
+     0.20s 16.81% 16.81%      0.20s 16.81%  runtime.futex
+     0.16s 13.45% 30.25%      0.16s 13.45%  internal/runtime/syscall.Syscall6
+     0.06s  5.04% 35.29%      0.06s  5.04%  runtime.nextFreeFast (inline)
+     0.06s  5.04% 40.34%      0.06s  5.04%  runtime.tgkill
+     0.04s  3.36% 43.70%      0.04s  3.36%  runtime.(*mspan).writeHeapBitsSmall
+     0.03s  2.52% 46.22%      0.03s  2.52%  runtime.memmove
+     0.03s  2.52% 48.74%      0.03s  2.52%  runtime.usleep
+     0.03s  2.52% 51.26%      0.03s  2.52%  runtime.write1
+     0.02s  1.68% 52.94%      0.04s  3.36%  bufio.(*Writer).WriteByte
+     0.02s  1.68% 54.62%      0.02s  1.68%  runtime.(*mspan).base (inline)
+     0.02s  1.68% 56.30%      0.25s 21.01%  runtime.mallocgc
+     0.02s  1.68% 57.98%      0.15s 12.61%  runtime.mallocgcSmallScanNoHeader
+     0.02s  1.68% 59.66%      0.05s  4.20%  runtime.scanobject
+     0.01s  0.84% 60.50%      0.01s  0.84%  bufio.(*Writer).Available (inline)
+     0.01s  0.84% 61.34%      0.04s  3.36%  database/sql.(*Rows).nextLocked
+     0.01s  0.84% 62.18%      0.81s 68.07%  feedsystem_video_go/internal/feed.TestPushDiagnosticRound
+     0.01s  0.84% 63.03%      0.32s 26.89%  feedsystem_video_go/internal/middleware/redis.(*Client).ZRevRangeByLexBatch
+     0.01s  0.84% 63.87%      0.02s  1.68%  fmt.(*buffer).writeString (inline)
+     0.01s  0.84% 64.71%      0.01s  0.84%  fmt.(*fmt).fmtInteger
+     0.01s  0.84% 65.55%      0.04s  3.36%  fmt.(*pp).doPrintf
+     0.01s  0.84% 66.39%      0.02s  1.68%  github.com/go-sql-driver/mysql.(*mysqlConn).QueryContext
+     0.01s  0.84% 67.23%      0.01s  0.84%  github.com/go-sql-driver/mysql.(*mysqlConn).error
+     0.01s  0.84% 68.07%      0.12s 10.08%  github.com/go-sql-driver/mysql.(*mysqlConn).readPacket
+     0.01s  0.84% 68.91%      0.03s  2.52%  github.com/redis/go-redis/v9.(*baseClient).processPendingPushNotificationWithReader
+     0.01s  0.84% 69.75%      0.01s  0.84%  github.com/redis/go-redis/v9.(*baseCmd).Args

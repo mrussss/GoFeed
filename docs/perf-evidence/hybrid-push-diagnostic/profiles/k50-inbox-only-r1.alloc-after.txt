@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:16 CST
+Showing nodes accounting for 34806.79kB, 78.16% of 44535.27kB total
+Showing top 25 nodes out of 152
+      flat  flat%   sum%        cum   cum%
+ 7171.28kB 16.10% 16.10%  8195.44kB 18.40%  gorm.io/gorm.(*Statement).clone
+ 5123.59kB 11.50% 27.61%  5635.61kB 12.65%  gorm.io/gorm.(*Statement).AddClause
+ 2048.28kB  4.60% 32.21%  3072.32kB  6.90%  feedsystem_video_go/internal/feed.(*FeedService).localVideo
+ 2048.23kB  4.60% 36.81%  5121.13kB 11.50%  gorm.io/gorm.(*Statement).AddVar
+ 1538.08kB  3.45% 40.26%  1538.08kB  3.45%  reflect.unsafe_NewArray
+ 1536.48kB  3.45% 43.71%  1536.48kB  3.45%  feedsystem_video_go/internal/feed.mergeFollowingCandidates
+ 1536.04kB  3.45% 47.16%  2048.19kB  4.60%  reflect.Value.extendSlice
+ 1025.25kB  2.30% 49.46% 11782.51kB 26.46%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+ 1024.20kB  2.30% 51.76%  1024.20kB  2.30%  context.(*cancelCtx).propagateCancel
+ 1024.19kB  2.30% 54.06% 20997.43kB 47.15%  feedsystem_video_go/internal/feed.(*FeedService).loadFollowingCandidates
+ 1024.16kB  2.30% 56.36%  1024.16kB  2.30%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+ 1024.14kB  2.30% 58.66% 15876.77kB 35.65%  feedsystem_video_go/internal/feed.(*FeedRepository).followingCandidateTimes
+ 1024.05kB  2.30% 60.96%  1024.05kB  2.30%  github.com/redis/go-redis/v9/internal/proto.(*Reader).readStringReply
+ 1024.02kB  2.30% 63.26%  1024.02kB  2.30%  reflect.New
+ 1024.02kB  2.30% 65.56%  1024.02kB  2.30%  github.com/go-sql-driver/mysql.converter.ConvertValue
+  902.59kB  2.03% 67.58%  1447.25kB  3.25%  compress/flate.NewWriter
+  578.66kB  1.30% 68.88%   578.66kB  1.30%  runtime/pprof.StartCPUProfile
+  544.67kB  1.22% 70.11%   544.67kB  1.22%  compress/flate.(*compressor).init
+  512.22kB  1.15% 71.26%  1536.23kB  3.45%  database/sql.driverArgsConnLocked
+  512.16kB  1.15% 72.41%   512.16kB  1.15%  reflect.growslice
+  512.14kB  1.15% 73.56%  3584.46kB  8.05%  feedsystem_video_go/internal/feed.(*FeedService).GetVideoByIDs
+  512.11kB  1.15% 74.71%   512.11kB  1.15%  strings.(*Builder).WriteString (inline)
+  512.09kB  1.15% 75.86%  3585.50kB  8.05%  gorm.io/gorm.(*DB).Session
+  512.09kB  1.15% 77.01%   512.09kB  1.15%  github.com/go-sql-driver/mysql.namedValueToValue (inline)
+  512.06kB  1.15% 78.16%   512.06kB  1.15%  github.com/redis/go-redis/v9.cmdable.zRevRangeBy

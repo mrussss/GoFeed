@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:39 CST
+Showing nodes accounting for 59.78MB, 89.52% of 66.78MB total
+Showing top 25 nodes out of 146
+      flat  flat%   sum%        cum   cum%
+      12MB 17.97% 17.97%    17.52MB 26.23%  reflect.Value.extendSlice
+    6.50MB  9.74% 27.71%        7MB 10.49%  gorm.io/gorm.(*Statement).clone
+    5.52MB  8.26% 35.97%     5.52MB  8.26%  reflect.growslice
+    4.50MB  6.74% 42.71%        5MB  7.49%  github.com/go-sql-driver/mysql.(*binaryRows).readRow
+       4MB  5.99% 48.70%        4MB  5.99%  strconv.formatBits
+    3.51MB  5.25% 53.95%     3.51MB  5.25%  reflect.unsafe_NewArray
+    3.50MB  5.24% 59.19%     3.50MB  5.24%  reflect.New
+    2.50MB  3.75% 62.94%        3MB  4.49%  gorm.io/gorm.(*Statement).AddClause
+    1.50MB  2.25% 65.19%     2.50MB  3.74%  database/sql.driverArgsConnLocked
+    1.50MB  2.25% 67.43%        4MB  5.99%  gorm.io/gorm.(*DB).Session
+    1.50MB  2.25% 69.68%        2MB  3.00%  feedsystem_video_go/internal/feed.(*FeedService).localVideo
+    1.50MB  2.25% 71.93%     6.50MB  9.74%  gorm.io/gorm.(*Statement).AddVar
+    1.50MB  2.25% 74.17%    36.03MB 53.95%  gorm.io/gorm.Scan
+    1.17MB  1.75% 75.92%     1.70MB  2.54%  compress/flate.(*compressor).init
+    1.16MB  1.73% 77.65%     1.16MB  1.73%  runtime/pprof.StartCPUProfile
+       1MB  1.50% 79.16%        1MB  1.50%  sync.(*Pool).pinSlow
+       1MB  1.50% 80.65%        1MB  1.50%  github.com/go-sql-driver/mysql.(*mysqlConn).readColumns
+       1MB  1.50% 82.15%        6MB  8.99%  database/sql.(*Rows).nextLocked
+       1MB  1.50% 83.65%        1MB  1.50%  strings.(*Builder).WriteByte
+       1MB  1.50% 85.15%        1MB  1.50%  github.com/go-sql-driver/mysql.converter.ConvertValue
+    0.88MB  1.32% 86.47%     2.58MB  3.86%  compress/flate.NewWriter
+    0.53MB   0.8% 87.26%     0.53MB   0.8%  compress/flate.newDeflateFast (inline)
+    0.50MB  0.75% 88.02%     0.50MB  0.75%  hash/crc32.slicingMakeTable
+    0.50MB  0.75% 88.77%     0.50MB  0.75%  feedsystem_video_go/internal/feed.mergeFollowingCandidates
+    0.50MB  0.75% 89.52%     0.50MB  0.75%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)

@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:34 CST
+Showing nodes accounting for 73.14MB, 89.59% of 81.64MB total
+Showing top 25 nodes out of 133
+      flat  flat%   sum%        cum   cum%
+   13.05MB 15.98% 15.98%    13.05MB 15.98%  reflect.growslice
+   12.50MB 15.31% 31.29%    25.55MB 31.29%  reflect.Value.extendSlice
+       8MB  9.80% 41.10%       10MB 12.25%  gorm.io/gorm.(*Statement).clone
+       4MB  4.91% 46.00%    10.51MB 12.87%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+       4MB  4.90% 50.90%        4MB  4.90%  strconv.formatBits
+    3.50MB  4.29% 55.19%     4.50MB  5.52%  gorm.io/gorm.(*Statement).AddClause
+    3.50MB  4.29% 59.48%     3.50MB  4.29%  github.com/go-sql-driver/mysql.(*binaryRows).readRow
+    3.50MB  4.29% 63.77%     3.50MB  4.29%  reflect.New
+       3MB  3.68% 67.45%        3MB  3.68%  reflect.unsafe_NewArray
+       2MB  2.45% 69.90%        2MB  2.45%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+       2MB  2.45% 72.35%        7MB  8.58%  gorm.io/gorm.(*Statement).AddVar
+       2MB  2.45% 74.80%        2MB  2.45%  gorm.io/gorm.(*Statement).BuildCondition
+    1.50MB  1.84% 76.64%     1.50MB  1.84%  feedsystem_video_go/internal/feed.(*FeedService).localVideo
+    1.16MB  1.42% 78.05%     1.16MB  1.42%  runtime/pprof.StartCPUProfile
+       1MB  1.23% 79.28%    24.01MB 29.41%  feedsystem_video_go/internal/feed.(*FeedRepository).followingCandidateTimes
+       1MB  1.23% 80.50%        1MB  1.23%  database/sql.driverArgsConnLocked
+       1MB  1.23% 81.73%        1MB  1.23%  strings.(*Builder).WriteString (inline)
+       1MB  1.23% 82.95%        1MB  1.23%  github.com/go-sql-driver/mysql.namedValueToValue (inline)
+       1MB  1.23% 84.18%        1MB  1.23%  context.(*cancelCtx).propagateCancel
+       1MB  1.23% 85.40%     4.50MB  5.51%  database/sql.(*DB).queryDC
+       1MB  1.23% 86.63%        1MB  1.23%  feedsystem_video_go/internal/feed.buildOrderedResult
+    0.88MB  1.08% 87.71%     1.41MB  1.73%  compress/flate.NewWriter
+    0.53MB  0.65% 88.36%     0.53MB  0.65%  compress/flate.newDeflateFast (inline)
+    0.50MB  0.61% 88.97%     0.50MB  0.61%  runtime/pprof.(*profileBuilder).emitLocation
+    0.50MB  0.61% 89.59%     0.50MB  0.61%  runtime.malg

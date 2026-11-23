@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:11 CST
+Showing nodes accounting for 65.18MB, 82.82% of 78.70MB total
+Showing top 25 nodes out of 144
+      flat  flat%   sum%        cum   cum%
+      11MB 13.98% 13.98%    20.50MB 26.05%  github.com/redis/go-redis/v9.cmdable.zRevRangeBy
+    6.50MB  8.26% 22.24%     6.50MB  8.26%  github.com/redis/go-redis/v9.NewStringSliceCmd (inline)
+       6MB  7.63% 29.86%        8MB 10.17%  gorm.io/gorm.(*Statement).clone
+       6MB  7.62% 37.49%     9.50MB 12.07%  feedsystem_video_go/internal/middleware/redis.(*Client).Key (inline)
+       5MB  6.36% 43.85%     5.50MB  6.99%  gorm.io/gorm.(*Statement).AddClause
+       3MB  3.82% 47.66%        3MB  3.82%  github.com/redis/go-redis/v9.(*Pipeline).BatchProcess (inline)
+       3MB  3.81% 51.47%     3.50MB  4.45%  fmt.Sprintf
+       2MB  2.54% 54.02%        2MB  2.54%  reflect.unsafe_NewArray
+       2MB  2.54% 56.56%        2MB  2.54%  database/sql.driverArgsConnLocked
+       2MB  2.54% 59.10%        5MB  6.35%  gorm.io/gorm.(*DB).Session
+       2MB  2.54% 61.64%        2MB  2.54%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+    1.50MB  1.91% 63.55%    11.01MB 13.98%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+    1.50MB  1.91% 65.46%        2MB  2.54%  github.com/redis/go-redis/v9.(*StringSliceCmd).readReply
+    1.50MB  1.91% 67.36%     1.50MB  1.91%  time.newTimer
+    1.50MB  1.91% 69.27%     1.50MB  1.91%  reflect.New
+    1.50MB  1.91% 71.18%     2.50MB  3.18%  github.com/go-sql-driver/mysql.(*binaryRows).readRow
+    1.16MB  1.47% 72.64%     1.16MB  1.47%  runtime/pprof.StartCPUProfile
+       1MB  1.28% 73.92%        1MB  1.28%  sync.(*Pool).pinSlow
+       1MB  1.27% 75.19%    23.51MB 29.87%  feedsystem_video_go/internal/middleware/redis.(*Client).ZRevRangeByLexBatch
+       1MB  1.27% 76.46%    64.52MB 81.98%  feedsystem_video_go/internal/feed.(*FeedService).followingVideos
+       1MB  1.27% 77.74%        1MB  1.27%  reflect.growslice
+       1MB  1.27% 79.01%        1MB  1.27%  context.(*cancelCtx).propagateCancel
+       1MB  1.27% 80.28%        1MB  1.27%  github.com/go-sql-driver/mysql.namedValueToValue (inline)
+       1MB  1.27% 81.55%     3.50MB  4.45%  feedsystem_video_go/internal/feed.(*FeedService).localVideo
+       1MB  1.27% 82.82%        1MB  1.27%  context.(*cancelCtx).Done

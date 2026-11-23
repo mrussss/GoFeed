@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:39 CST
+Duration: 4.14s, Total samples = 860ms (20.80%)
+Showing nodes accounting for 670ms, 77.91% of 860ms total
+Showing top 25 nodes out of 238
+      flat  flat%   sum%        cum   cum%
+     260ms 30.23% 30.23%      260ms 30.23%  runtime.futex
+     110ms 12.79% 43.02%      110ms 12.79%  internal/runtime/syscall.Syscall6
+      30ms  3.49% 46.51%       80ms  9.30%  runtime.stealWork
+      20ms  2.33% 48.84%       20ms  2.33%  runtime.(*timers).wakeTime (inline)
+      20ms  2.33% 51.16%       20ms  2.33%  runtime.mallocgcTiny
+      20ms  2.33% 53.49%       50ms  5.81%  runtime.netpoll
+      20ms  2.33% 55.81%       20ms  2.33%  runtime.sellock
+      20ms  2.33% 58.14%       20ms  2.33%  runtime.usleep
+      10ms  1.16% 59.30%       30ms  3.49%  database/sql.(*DB).queryDC.func1
+      10ms  1.16% 60.47%      160ms 18.60%  database/sql.withLock
+      10ms  1.16% 61.63%       10ms  1.16%  fmt.(*pp).doPrintf
+      10ms  1.16% 62.79%      110ms 12.79%  github.com/go-sql-driver/mysql.(*buffer).readNext
+      10ms  1.16% 63.95%       60ms  6.98%  github.com/go-sql-driver/mysql.(*mysqlStmt).readPrepareResultPacket
+      10ms  1.16% 65.12%       40ms  4.65%  github.com/go-sql-driver/mysql.(*mysqlStmt).writeExecutePacket
+      10ms  1.16% 66.28%       10ms  1.16%  github.com/redis/go-redis/v9/internal/proto.(*Writer).bytes
+      10ms  1.16% 67.44%       30ms  3.49%  gorm.io/gorm.(*DB).scanIntoStruct
+      10ms  1.16% 68.60%      330ms 38.37%  gorm.io/gorm.(*processor).Execute
+      10ms  1.16% 69.77%      230ms 26.74%  gorm.io/gorm/callbacks.Query
+      10ms  1.16% 70.93%       10ms  1.16%  internal/runtime/atomic.(*Uint8).Store
+      10ms  1.16% 72.09%       10ms  1.16%  reflect.Value.Elem
+      10ms  1.16% 73.26%       10ms  1.16%  reflect.Value.SetUint
+      10ms  1.16% 74.42%       10ms  1.16%  runtime.(*randomEnum).next (inline)
+      10ms  1.16% 75.58%       10ms  1.16%  runtime.(*scavengeIndex).free
+      10ms  1.16% 76.74%       10ms  1.16%  runtime.(*spanSet).push
+      10ms  1.16% 77.91%       30ms  3.49%  runtime.convT64

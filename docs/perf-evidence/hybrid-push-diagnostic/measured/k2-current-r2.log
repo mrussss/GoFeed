@@ -1,0 +1,4 @@
+=== RUN   TestPushDiagnosticRound
+    push_diagnostic_test.go:300: DIAGNOSTIC_RESULT {"authors":2,"cmd_build_us_per_request":3.497955010224949,"go_alloc_kib_per_request":39.807315631390594,"go_cpu_pct":24.667211520578103,"go_cpu_us_per_request":1008.9652351738241,"key_build_us_per_request":2.438650306748466,"pipeline_calls":978,"pipeline_failures":0,"pipeline_mean_ms":0.524996005112475,"pipeline_p95_ms":0.813482,"pipeline_timeouts":0,"redis_candidate_commands":2934,"redis_commands_per_request":3,"redis_input_bytes_per_request":482.04498977505114,"redis_output_bytes_per_request":466.93865030674846,"redis_server_zrevrangebylex_calls":2934,"redis_server_zrevrangebylex_us_per_request":13.468302658486708,"repeat":2,"requests":978,"response_errors":0,"service_p50_ms":3.932808,"service_p95_ms":5.875049,"sql_per_request":4,"success_per_s":244.48029189358982,"variant":"current","wall_s":4.000322449}
+--- PASS: TestPushDiagnosticRound (4.38s)
+PASS

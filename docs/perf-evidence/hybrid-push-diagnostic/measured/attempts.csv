@@ -1,0 +1,13 @@
+authors,variant,repeat,status
+2,current,1,pass
+2,inbox-only,1,pass
+2,inbox-only,2,pass
+2,current,2,pass
+50,current,1,pass
+50,inbox-only,1,pass
+50,inbox-only,2,pass
+50,current,2,pass
+500,current,1,pass
+500,inbox-only,1,pass
+500,inbox-only,2,pass
+500,current,2,pass

@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:14:57 CST
+Showing nodes accounting for 36935.45kB, 83.75% of 44103.86kB total
+Showing top 25 nodes out of 140
+      flat  flat%   sum%        cum   cum%
+ 4610.30kB 10.45% 10.45%  6146.54kB 13.94%  gorm.io/gorm.(*Statement).clone
+ 2561.80kB  5.81% 16.26%  2561.80kB  5.81%  gorm.io/gorm.(*Statement).AddClause
+ 2560.35kB  5.81% 22.07%  4608.45kB 10.45%  feedsystem_video_go/internal/feed.(*FeedService).localVideo
+ 2560.16kB  5.80% 27.87%  2560.16kB  5.80%  feedsystem_video_go/internal/middleware/redis.(*Client).Key (inline)
+    2052kB  4.65% 32.52%     2052kB  4.65%  reflect.unsafe_NewArray
+ 2048.09kB  4.64% 37.17%  2048.09kB  4.64%  github.com/redis/go-redis/v9/internal/proto.(*Reader).readStringReply
+ 1537.29kB  3.49% 40.65%  9735.37kB 22.07%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+ 1536.48kB  3.48% 44.14%  1536.48kB  3.48%  database/sql.driverArgsConnLocked
+ 1536.23kB  3.48% 47.62%  1536.23kB  3.48%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+ 1536.16kB  3.48% 51.10%  1536.16kB  3.48%  context.(*cancelCtx).Done
+ 1536.12kB  3.48% 54.59%  2560.23kB  5.80%  context.WithDeadlineCause
+ 1184.27kB  2.69% 57.27%  1184.27kB  2.69%  runtime/pprof.StartCPUProfile
+ 1024.28kB  2.32% 59.59%  5632.73kB 12.77%  feedsystem_video_go/internal/feed.(*FeedService).GetVideoByIDs
+ 1024.23kB  2.32% 61.92%  1024.23kB  2.32%  github.com/go-sql-driver/mysql.(*mysqlConn).readColumns
+ 1024.18kB  2.32% 64.24%  1024.18kB  2.32%  github.com/go-sql-driver/mysql.namedValueToValue (inline)
+ 1024.14kB  2.32% 66.56%  4609.77kB 10.45%  feedsystem_video_go/internal/feed.(*FeedRepository).followingVideos
+ 1024.11kB  2.32% 68.88%     4609kB 10.45%  database/sql.(*DB).queryDC
+ 1024.11kB  2.32% 71.21%  1024.11kB  2.32%  time.newTimer
+ 1024.05kB  2.32% 73.53%  1024.05kB  2.32%  gorm.io/gorm/callbacks.AfterQuery
+ 1024.03kB  2.32% 75.85%  1024.03kB  2.32%  strings.(*Builder).WriteByte
+ 1024.02kB  2.32% 78.17%  1024.02kB  2.32%  reflect.New
+  902.59kB  2.05% 80.22%  1414.67kB  3.21%  compress/flate.NewWriter (inline)
+  532.26kB  1.21% 81.42%  1946.93kB  4.41%  runtime/pprof.(*profileBuilder).emitLocation
+  512.11kB  1.16% 82.59%   512.11kB  1.16%  strings.(*Builder).WriteString
+  512.09kB  1.16% 83.75%   512.09kB  1.16%  compress/flate.newHuffmanEncoder (inline)

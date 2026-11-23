@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:23 CST
+Showing nodes accounting for 74.19MB, 85.56% of 86.71MB total
+Showing top 25 nodes out of 157
+      flat  flat%   sum%        cum   cum%
+   11.50MB 13.26% 13.26%    23.50MB 27.11%  github.com/redis/go-redis/v9.cmdable.zRevRangeBy
+    9.50MB 10.96% 24.22%     9.50MB 10.96%  github.com/redis/go-redis/v9.NewStringSliceCmd (inline)
+       7MB  8.08% 32.30%        8MB  9.23%  gorm.io/gorm.(*Statement).clone
+       6MB  6.92% 39.22%     9.50MB 10.96%  feedsystem_video_go/internal/middleware/redis.(*Client).Key (inline)
+    4.01MB  4.62% 43.84%     4.01MB  4.62%  reflect.unsafe_NewArray
+    3.50MB  4.04% 47.87%     3.50MB  4.04%  fmt.Sprintf
+       3MB  3.46% 51.34%    28.01MB 32.30%  feedsystem_video_go/internal/middleware/redis.(*Client).ZRevRangeByLexBatch
+       3MB  3.46% 54.80%        3MB  3.46%  feedsystem_video_go/internal/feed.mergeFollowingCandidates
+       3MB  3.46% 58.26%     3.50MB  4.04%  database/sql.driverArgsConnLocked
+    2.50MB  2.89% 61.15%     2.50MB  2.89%  github.com/redis/go-redis/v9.(*Pipeline).BatchProcess (inline)
+    2.50MB  2.89% 64.03%        3MB  3.46%  gorm.io/gorm.(*Statement).AddClause
+       2MB  2.31% 66.34%     4.50MB  5.19%  gorm.io/gorm.(*DB).Session
+       2MB  2.31% 68.65%        2MB  2.31%  context.(*cancelCtx).propagateCancel
+    1.51MB  1.74% 70.39%     1.51MB  1.74%  sync.(*Pool).pinSlow
+    1.50MB  1.73% 72.12%     1.50MB  1.73%  github.com/go-sql-driver/mysql.namedValueToValue (inline)
+    1.50MB  1.73% 73.85%     1.50MB  1.73%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+    1.50MB  1.73% 75.58%     1.50MB  1.73%  context.(*cancelCtx).Done
+    1.50MB  1.73% 77.31%     2.50MB  2.88%  reflect.Value.extendSlice
+    1.16MB  1.33% 78.64%     1.16MB  1.33%  runtime/pprof.StartCPUProfile
+       1MB  1.15% 79.79%     9.51MB 10.97%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+       1MB  1.15% 80.95%    72.53MB 83.64%  feedsystem_video_go/internal/feed.(*FeedService).followingVideos
+       1MB  1.15% 82.10%        1MB  1.15%  reflect.growslice
+       1MB  1.15% 83.26%        1MB  1.15%  runtime/pprof.allFrames
+       1MB  1.15% 84.41%    22.01MB 25.39%  feedsystem_video_go/internal/feed.(*FeedRepository).followingCandidateTimes
+       1MB  1.15% 85.56%     2.50MB  2.88%  feedsystem_video_go/internal/feed.(*FeedService).localVideo

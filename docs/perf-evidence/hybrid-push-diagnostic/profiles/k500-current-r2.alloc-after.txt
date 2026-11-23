@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:44 CST
+Showing nodes accounting for 258.14MB, 96.90% of 266.41MB total
+Dropped 52 nodes (cum <= 1.33MB)
+Showing top 25 nodes out of 87
+      flat  flat%   sum%        cum   cum%
+   92.01MB 34.54% 34.54%   139.08MB 52.20%  github.com/redis/go-redis/v9.cmdable.zRevRangeBy
+      35MB 13.14% 47.67%    46.50MB 17.46%  feedsystem_video_go/internal/middleware/redis.(*Client).Key (inline)
+      34MB 12.76% 60.44%       34MB 12.76%  github.com/redis/go-redis/v9.NewStringSliceCmd (inline)
+   13.07MB  4.91% 65.34%    13.07MB  4.91%  github.com/redis/go-redis/v9.(*Pipeline).BatchProcess (inline)
+   12.11MB  4.55% 69.89%   151.69MB 56.94%  feedsystem_video_go/internal/middleware/redis.(*Client).ZRevRangeByLexBatch
+   11.50MB  4.32% 74.21%    11.50MB  4.32%  fmt.Sprintf
+    9.50MB  3.57% 77.77%    15.52MB  5.83%  reflect.Value.extendSlice
+    8.58MB  3.22% 80.99%     8.58MB  3.22%  feedsystem_video_go/internal/feed.mergeFollowingCandidates
+    8.05MB  3.02% 84.02%   251.87MB 94.54%  feedsystem_video_go/internal/feed.(*FeedService).followingVideos
+    6.02MB  2.26% 86.28%     6.02MB  2.26%  reflect.growslice
+       4MB  1.50% 87.78%        6MB  2.25%  gorm.io/gorm.(*Statement).clone
+    3.50MB  1.31% 89.09%     3.50MB  1.31%  reflect.New
+    2.50MB  0.94% 90.03%        3MB  1.13%  gorm.io/gorm.(*Statement).AddClause
+    2.50MB  0.94% 90.97%     2.50MB  0.94%  strconv.formatBits
+    2.01MB  0.75% 91.72%     2.01MB  0.75%  sync.(*Pool).pinSlow
+       2MB  0.75% 92.48%     8.01MB  3.01%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+       2MB  0.75% 93.23%        2MB  0.75%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+       2MB  0.75% 93.98%        2MB  0.75%  github.com/go-sql-driver/mysql.(*binaryRows).readRow
+    1.76MB  0.66% 94.64%     2.86MB  1.08%  compress/flate.NewWriter (inline)
+    1.50MB  0.56% 95.20%     1.50MB  0.56%  reflect.unsafe_NewArray
+    1.01MB  0.38% 95.58%     3.87MB  1.45%  runtime/pprof.(*profileBuilder).emitLocation
+       1MB  0.38% 95.96%        3MB  1.13%  database/sql.(*DB).queryDC
+       1MB  0.38% 96.33%        2MB  0.75%  gorm.io/gorm/callbacks.BuildQuerySQL
+       1MB  0.38% 96.71%     1.50MB  0.56%  database/sql.(*Rows).initContextClose
+    0.50MB  0.19% 96.90%     1.50MB  0.56%  feedsystem_video_go/internal/feed.(*FeedService).GetVideoByIDs

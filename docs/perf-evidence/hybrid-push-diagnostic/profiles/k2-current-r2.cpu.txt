@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:07 CST
+Duration: 4.12s, Total samples = 720ms (17.47%)
+Showing nodes accounting for 640ms, 88.89% of 720ms total
+Showing top 25 nodes out of 210
+      flat  flat%   sum%        cum   cum%
+     160ms 22.22% 22.22%      160ms 22.22%  internal/runtime/syscall.Syscall6
+     150ms 20.83% 43.06%      150ms 20.83%  runtime.futex
+      50ms  6.94% 50.00%       50ms  6.94%  runtime.write1
+      30ms  4.17% 54.17%       60ms  8.33%  internal/runtime/syscall.EpollWait
+      30ms  4.17% 58.33%       60ms  8.33%  runtime.notesleep
+      20ms  2.78% 61.11%       20ms  2.78%  database/sql/driver.IsValue
+      20ms  2.78% 63.89%       20ms  2.78%  runtime.pMask.read
+      10ms  1.39% 65.28%       10ms  1.39%  context.(*timerCtx).Done
+      10ms  1.39% 66.67%       10ms  1.39%  context.parentCancelCtx
+      10ms  1.39% 68.06%       30ms  4.17%  database/sql.(*Rows).close
+      10ms  1.39% 69.44%       50ms  6.94%  github.com/go-sql-driver/mysql.(*okHandler).readResultSetHeaderPacket
+      10ms  1.39% 70.83%       10ms  1.39%  gorm.io/driver/mysql.Dialector.QuoteTo
+      10ms  1.39% 72.22%       50ms  6.94%  gorm.io/gorm/callbacks.BuildQuerySQL
+      10ms  1.39% 73.61%       30ms  4.17%  gorm.io/gorm/clause.Clause.Build
+      10ms  1.39% 75.00%       10ms  1.39%  gorm.io/gorm/schema.(*Field).setupValuerAndSetter.func9
+      10ms  1.39% 76.39%       10ms  1.39%  gorm.io/gorm/schema.ParseWithSpecialTableName
+      10ms  1.39% 77.78%       10ms  1.39%  internal/poll.runtime_pollReset
+      10ms  1.39% 79.17%       10ms  1.39%  internal/runtime/atomic.(*Uint32).CompareAndSwap
+      10ms  1.39% 80.56%       10ms  1.39%  internal/runtime/maps.(*Iter).Next
+      10ms  1.39% 81.94%       10ms  1.39%  runtime.(*itabTableType).find
+      10ms  1.39% 83.33%       10ms  1.39%  runtime.(*mspan).refillAllocCache
+      10ms  1.39% 84.72%       10ms  1.39%  runtime.(*timeHistogram).record
+      10ms  1.39% 86.11%       10ms  1.39%  runtime.(*timers).cleanHead
+      10ms  1.39% 87.50%       10ms  1.39%  runtime.(*timers).run
+      10ms  1.39% 88.89%       10ms  1.39%  runtime.checkTimersNoP

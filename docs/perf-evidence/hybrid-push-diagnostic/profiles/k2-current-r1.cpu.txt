@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:14:55 CST
+Duration: 4.12s, Total samples = 700ms (16.98%)
+Showing nodes accounting for 670ms, 95.71% of 700ms total
+Showing top 25 nodes out of 220
+      flat  flat%   sum%        cum   cum%
+     270ms 38.57% 38.57%      270ms 38.57%  runtime.futex
+     110ms 15.71% 54.29%      110ms 15.71%  internal/runtime/syscall.Syscall6
+      40ms  5.71% 60.00%       40ms  5.71%  runtime.write1
+      20ms  2.86% 62.86%      210ms 30.00%  database/sql.withLock
+      20ms  2.86% 65.71%       20ms  2.86%  runtime.memclrNoHeapPointers
+      20ms  2.86% 68.57%       20ms  2.86%  runtime.nextFreeFast (inline)
+      10ms  1.43% 70.00%       10ms  1.43%  aeshashbody
+      10ms  1.43% 71.43%      510ms 72.86%  feedsystem_video_go/internal/feed.(*FeedService).ListByFollowing
+      10ms  1.43% 72.86%       10ms  1.43%  github.com/go-sql-driver/mysql.(*mysqlConn).IsValid
+      10ms  1.43% 74.29%       10ms  1.43%  github.com/go-sql-driver/mysql.readLengthEncodedInteger
+      10ms  1.43% 75.71%       10ms  1.43%  github.com/redis/go-redis/v9.cmdable.zRevRangeBy
+      10ms  1.43% 77.14%       20ms  2.86%  gorm.io/gorm.(*Statement).ParseWithSpecialTableName
+      10ms  1.43% 78.57%       20ms  2.86%  gorm.io/gorm/schema.(*Field).setupValuerAndSetter.func9
+      10ms  1.43% 80.00%       10ms  1.43%  internal/abi.(*Type).Kind (inline)
+      10ms  1.43% 81.43%       20ms  2.86%  internal/sync.(*HashTrieMap[go.shape.interface {},go.shape.interface {}]).init (inline)
+      10ms  1.43% 82.86%       10ms  1.43%  internal/sync.(*HashTrieMap[go.shape.interface {},go.shape.interface {}]).initSlow
+      10ms  1.43% 84.29%       10ms  1.43%  reflect.Value.Field
+      10ms  1.43% 85.71%       10ms  1.43%  runtime.(*randomEnum).done
+      10ms  1.43% 87.14%       10ms  1.43%  runtime.(*spanSet).push
+      10ms  1.43% 88.57%       10ms  1.43%  runtime.(*unwinder).resolveInternal
+      10ms  1.43% 90.00%       10ms  1.43%  runtime.chansend.func1
+      10ms  1.43% 91.43%       10ms  1.43%  runtime.getGCMask (inline)
+      10ms  1.43% 92.86%       10ms  1.43%  runtime.pMask.set
+      10ms  1.43% 94.29%       10ms  1.43%  runtime.read
+      10ms  1.43% 95.71%      230ms 32.86%  runtime.systemstack

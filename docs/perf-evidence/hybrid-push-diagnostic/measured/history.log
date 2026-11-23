@@ -1,0 +1,8 @@
+=== RUN   TestPushDiagnosticHistory
+    push_diagnostic_test.go:410: current: IDs=[490026 490025 490024 490022 490021 490020], candidate commands=12
+    push_diagnostic_test.go:411: history-aware: IDs=[490026 490025 490024 490022 490021 490020], candidate commands=9
+    push_diagnostic_test.go:420: current-mode-only first page: IDs=[490026 490025 490024 490021], historical B=490022 omitted
+    push_diagnostic_test.go:424: current after deletion/unfollow: IDs=[490026 490025 490020], candidate commands=6
+    push_diagnostic_test.go:425: history-aware after deletion/unfollow: IDs=[490026 490025 490020], candidate commands=4
+--- PASS: TestPushDiagnosticHistory (0.20s)
+PASS

@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:16 CST
+Duration: 4.11s, Total samples = 840ms (20.43%)
+Showing nodes accounting for 680ms, 80.95% of 840ms total
+Showing top 25 nodes out of 228
+      flat  flat%   sum%        cum   cum%
+     260ms 30.95% 30.95%      260ms 30.95%  runtime.futex
+     140ms 16.67% 47.62%      140ms 16.67%  internal/runtime/syscall.Syscall6
+      30ms  3.57% 51.19%       30ms  3.57%  runtime.execute
+      20ms  2.38% 53.57%      290ms 34.52%  database/sql.(*DB).queryDC
+      20ms  2.38% 55.95%       50ms  5.95%  database/sql.(*driverStmt).Close
+      20ms  2.38% 58.33%       20ms  2.38%  runtime.write1
+      10ms  1.19% 59.52%       10ms  1.19%  context.(*timerCtx).Done
+      10ms  1.19% 60.71%       10ms  1.19%  fmt.(*pp).doPrintf
+      10ms  1.19% 61.90%       10ms  1.19%  github.com/go-sql-driver/mysql.(*binaryRows).Close
+      10ms  1.19% 63.10%       10ms  1.19%  github.com/go-sql-driver/mysql.(*mysqlConn).error
+      10ms  1.19% 64.29%       20ms  2.38%  github.com/go-sql-driver/mysql.(*mysqlConn).readColumns
+      10ms  1.19% 65.48%      130ms 15.48%  github.com/go-sql-driver/mysql.(*mysqlConn).readPacket
+      10ms  1.19% 66.67%       20ms  2.38%  github.com/redis/go-redis/v9/internal/proto.(*Reader).PeekReplyType
+      10ms  1.19% 67.86%       30ms  3.57%  gorm.io/gorm.(*DB).scanIntoStruct
+      10ms  1.19% 69.05%       10ms  1.19%  gorm.io/gorm.(*Statement).AddClause
+      10ms  1.19% 70.24%      140ms 16.67%  gorm.io/gorm.Scan
+      10ms  1.19% 71.43%       30ms  3.57%  gorm.io/gorm/callbacks.BuildQuerySQL
+      10ms  1.19% 72.62%       20ms  2.38%  gorm.io/gorm/clause.buildExprs
+      10ms  1.19% 73.81%       20ms  2.38%  gorm.io/gorm/schema.ParseWithSpecialTableName
+      10ms  1.19% 75.00%       10ms  1.19%  internal/poll.(*pollDesc).wait
+      10ms  1.19% 76.19%       10ms  1.19%  internal/runtime/maps.(*Iter).Init
+      10ms  1.19% 77.38%       60ms  7.14%  internal/runtime/syscall.EpollWait
+      10ms  1.19% 78.57%       10ms  1.19%  reflect.(*rtype).common
+      10ms  1.19% 79.76%       10ms  1.19%  reflect.implements
+      10ms  1.19% 80.95%       10ms  1.19%  runtime.(*gcWork).putFast

@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:21 CST
+Showing nodes accounting for 35567.30kB, 82.24% of 43247.63kB total
+Showing top 25 nodes out of 140
+      flat  flat%   sum%        cum   cum%
+ 4609.69kB 10.66% 10.66%  5633.84kB 13.03%  gorm.io/gorm.(*Statement).clone
+ 3586.28kB  8.29% 18.95%  4098.30kB  9.48%  gorm.io/gorm.(*Statement).AddClause
+ 2560.35kB  5.92% 24.87%  3584.41kB  8.29%  feedsystem_video_go/internal/feed.(*FeedService).localVideo
+ 2048.70kB  4.74% 29.61%  2560.70kB  5.92%  database/sql.driverArgsConnLocked
+ 2048.28kB  4.74% 34.34%  5120.71kB 11.84%  gorm.io/gorm.(*Statement).AddVar
+ 2048.10kB  4.74% 39.08%  6656.80kB 15.39%  gorm.io/gorm/callbacks.BuildQuerySQL
+ 1762.94kB  4.08% 43.16%  1762.94kB  4.08%  runtime/pprof.StartCPUProfile
+ 1538.34kB  3.56% 46.71%  1538.34kB  3.56%  reflect.unsafe_NewArray
+ 1536.23kB  3.55% 50.27%  1536.23kB  3.55%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+ 1536.04kB  3.55% 53.82%  2560.66kB  5.92%  reflect.Value.extendSlice
+ 1025.25kB  2.37% 56.19%  9733.95kB 22.51%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+ 1024.62kB  2.37% 58.56%  1024.62kB  2.37%  reflect.growslice
+ 1024.38kB  2.37% 60.93%  1024.38kB  2.37%  github.com/go-sql-driver/mysql.(*mysqlConn).readColumns
+ 1024.28kB  2.37% 63.29%  1024.28kB  2.37%  feedsystem_video_go/internal/feed.mergeFollowingCandidates
+ 1024.12kB  2.37% 65.66%  3585.08kB  8.29%  gorm.io/gorm.(*DB).Session
+ 1024.11kB  2.37% 68.03%  5633.25kB 13.03%  database/sql.(*DB).queryDC
+ 1024.06kB  2.37% 70.40%  1024.06kB  2.37%  feedsystem_video_go/internal/middleware/redis.(*Client).Key (inline)
+ 1024.02kB  2.37% 72.77%  1024.02kB  2.37%  github.com/go-sql-driver/mysql.parseBinaryDateTime
+ 1024.02kB  2.37% 75.13%  1024.02kB  2.37%  reflect.New
+     513kB  1.19% 76.32%      513kB  1.19%  runtime.allocm
+  512.14kB  1.18% 77.50%  4096.55kB  9.47%  feedsystem_video_go/internal/feed.(*FeedService).GetVideoByIDs
+  512.12kB  1.18% 78.69%   512.12kB  1.18%  runtime/pprof.allFrames
+  512.11kB  1.18% 79.87%   512.11kB  1.18%  strings.(*Builder).WriteString (inline)
+  512.06kB  1.18% 81.06%   512.06kB  1.18%  strings.(*Builder).WriteByte
+  512.05kB  1.18% 82.24%   512.05kB  1.18%  context.(*cancelCtx).Done

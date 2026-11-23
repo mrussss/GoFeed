@@ -1,0 +1,32 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:14:55 CST
+Showing nodes accounting for 34576.10kB, 88.24% of 39184.33kB total
+Showing top 25 nodes out of 143
+      flat  flat%   sum%        cum   cum%
+ 4097.87kB 10.46% 10.46%  4609.95kB 11.76%  gorm.io/gorm.(*Statement).clone
+ 3590.08kB  9.16% 19.62%  3590.08kB  9.16%  reflect.unsafe_NewArray
+ 3073.84kB  7.84% 27.46%  3585.86kB  9.15%  gorm.io/gorm.(*Statement).AddClause
+ 2048.16kB  5.23% 32.69%  2048.16kB  5.23%  strings.(*Builder).WriteByte (inline)
+ 2048.04kB  5.23% 37.92%  2048.04kB  5.23%  reflect.New
+ 1805.17kB  4.61% 42.53%  3106.42kB  7.93%  compress/flate.NewWriter (inline)
+ 1536.67kB  3.92% 46.45%  1536.67kB  3.92%  database/sql.driverArgsConnLocked
+ 1536.22kB  3.92% 50.37%  2560.89kB  6.54%  gorm.io/gorm.(*Statement).AddVar
+ 1536.21kB  3.92% 54.29%  3584.94kB  9.15%  gorm.io/gorm.(*DB).Session
+ 1301.24kB  3.32% 57.61%  1301.24kB  3.32%  compress/flate.(*compressor).init
+ 1184.27kB  3.02% 60.63%  1184.27kB  3.02%  runtime/pprof.StartCPUProfile
+    1026kB  2.62% 63.25%     1026kB  2.62%  runtime.allocm
+ 1025.25kB  2.62% 65.87% 11785.61kB 30.08%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+ 1024.23kB  2.61% 68.48%  1024.23kB  2.61%  github.com/go-sql-driver/mysql.(*mysqlConn).readColumns
+ 1024.17kB  2.61% 71.09%  1024.17kB  2.61%  github.com/redis/go-redis/v9.(*StringSliceCmd).readReply
+ 1024.16kB  2.61% 73.71%  3585.06kB  9.15%  database/sql.(*DB).queryDC
+ 1024.16kB  2.61% 76.32%  1024.16kB  2.61%  internal/sync.newIndirectNode[go.shape.interface {},go.shape.interface {}] (inline)
+ 1024.12kB  2.61% 78.93%  2048.21kB  5.23%  github.com/redis/go-redis/v9.cmdable.zRevRangeBy
+  561.50kB  1.43% 80.37% 34544.51kB 88.16%  feedsystem_video_go/internal/feed.TestPushDiagnosticRound
+  521.37kB  1.33% 81.70%  2074.58kB  5.29%  runtime/pprof.(*profileBuilder).emitLocation
+  514.63kB  1.31% 83.01%   514.63kB  1.31%  os.readFileContents
+  512.56kB  1.31% 84.32%   512.56kB  1.31%  runtime/pprof.(*profMap).lookup
+  512.06kB  1.31% 85.63%  6150.18kB 15.70%  gorm.io/gorm.Scan
+  512.05kB  1.31% 86.93%   512.05kB  1.31%  github.com/redis/go-redis/v9.NewStringSliceCmd (inline)
+  512.05kB  1.31% 88.24%   512.05kB  1.31%  strings.(*Builder).grow

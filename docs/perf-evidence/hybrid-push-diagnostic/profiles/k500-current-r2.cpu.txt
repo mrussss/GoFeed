@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:44 CST
+Duration: 4.12s, Total samples = 1.13s (27.45%)
+Showing nodes accounting for 0.73s, 64.60% of 1.13s total
+Showing top 25 nodes out of 317
+      flat  flat%   sum%        cum   cum%
+     0.23s 20.35% 20.35%      0.23s 20.35%  runtime.futex
+     0.13s 11.50% 31.86%      0.13s 11.50%  internal/runtime/syscall.Syscall6
+     0.04s  3.54% 35.40%      0.04s  3.54%  runtime.memmove
+     0.03s  2.65% 38.05%      0.03s  2.65%  runtime.nextFreeFast (inline)
+     0.03s  2.65% 40.71%      0.11s  9.73%  runtime.scanobject
+     0.02s  1.77% 42.48%      0.03s  2.65%  fmt.(*pp).doPrintf
+     0.02s  1.77% 44.25%      0.03s  2.65%  runtime.(*gcBits).bitp (inline)
+     0.02s  1.77% 46.02%      0.02s  1.77%  runtime.(*gcBits).bytep (inline)
+     0.02s  1.77% 47.79%      0.15s 13.27%  runtime.mallocgc
+     0.02s  1.77% 49.56%      0.02s  1.77%  runtime.nanotime1
+     0.02s  1.77% 51.33%      0.02s  1.77%  runtime.tgkill
+     0.02s  1.77% 53.10%      0.02s  1.77%  runtime.typePointers.next
+     0.01s  0.88% 53.98%      0.01s  0.88%  bufio.(*Writer).Available (inline)
+     0.01s  0.88% 54.87%      0.01s  0.88%  bufio.(*Writer).WriteByte
+     0.01s  0.88% 55.75%      0.01s  0.88%  errors.is
+     0.01s  0.88% 56.64%      0.56s 49.56%  feedsystem_video_go/internal/feed.(*FeedService).followingVideos
+     0.01s  0.88% 57.52%      0.01s  0.88%  github.com/go-sql-driver/mysql.(*binaryRows).readRow
+     0.01s  0.88% 58.41%      0.04s  3.54%  github.com/go-sql-driver/mysql.(*mysqlConn).writePacket
+     0.01s  0.88% 59.29%      0.01s  0.88%  github.com/go-sql-driver/mysql.readLengthEncodedInteger
+     0.01s  0.88% 60.18%      0.02s  1.77%  github.com/redis/go-redis/v9.(*StringSliceCmd).readReply
+     0.01s  0.88% 61.06%      0.01s  0.88%  github.com/redis/go-redis/v9.setCmdsErr
+     0.01s  0.88% 61.95%      0.07s  6.19%  github.com/redis/go-redis/v9/internal/proto.(*Writer).bytes
+     0.01s  0.88% 62.83%      0.03s  2.65%  gorm.io/gorm.(*DB).scanIntoStruct
+     0.01s  0.88% 63.72%      0.01s  0.88%  gorm.io/gorm/schema.(*Field).setupValuerAndSetter.func12
+     0.01s  0.88% 64.60%      0.01s  0.88%  internal/runtime/atomic.(*Int32).Load

@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:23 CST
+Duration: 4.17s, Total samples = 890ms (21.32%)
+Showing nodes accounting for 690ms, 77.53% of 890ms total
+Showing top 25 nodes out of 247
+      flat  flat%   sum%        cum   cum%
+     250ms 28.09% 28.09%      250ms 28.09%  runtime.futex
+     110ms 12.36% 40.45%      110ms 12.36%  internal/runtime/syscall.Syscall6
+      40ms  4.49% 44.94%       40ms  4.49%  runtime.write1
+      30ms  3.37% 48.31%       30ms  3.37%  runtime.memclrNoHeapPointers
+      30ms  3.37% 51.69%       30ms  3.37%  runtime.memmove
+      20ms  2.25% 53.93%       80ms  8.99%  runtime.gcDrain
+      20ms  2.25% 56.18%       20ms  2.25%  runtime.nextFreeFast (inline)
+      20ms  2.25% 58.43%       40ms  4.49%  runtime.scanobject
+      10ms  1.12% 59.55%       10ms  1.12%  bufio.(*Writer).WriteByte
+      10ms  1.12% 60.67%       50ms  5.62%  database/sql.(*DB).queryDC.func1
+      10ms  1.12% 61.80%      130ms 14.61%  database/sql.ctxDriverPrepare
+      10ms  1.12% 62.92%      190ms 21.35%  database/sql.withLock
+      10ms  1.12% 64.04%      120ms 13.48%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+      10ms  1.12% 65.17%       60ms  6.74%  github.com/go-sql-driver/mysql.(*mysqlConn).finish (inline)
+      10ms  1.12% 66.29%       20ms  2.25%  github.com/go-sql-driver/mysql.(*mysqlConn).startWatcher.func1
+      10ms  1.12% 67.42%       20ms  2.25%  gorm.io/gorm.(*Statement).AddVar
+      10ms  1.12% 68.54%       10ms  1.12%  gorm.io/gorm/utils.ToString
+      10ms  1.12% 69.66%       10ms  1.12%  indexbytebody
+      10ms  1.12% 70.79%       10ms  1.12%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
+      10ms  1.12% 71.91%       10ms  1.12%  internal/runtime/maps.(*groupReference).key
+      10ms  1.12% 73.03%       40ms  4.49%  internal/runtime/syscall.EpollWait
+      10ms  1.12% 74.16%       10ms  1.12%  runtime.(*lfstack).push
+      10ms  1.12% 75.28%       20ms  2.25%  runtime.(*mcentral).cacheSpan
+      10ms  1.12% 76.40%       10ms  1.12%  runtime.(*mspan).writeHeapBitsSmall
+      10ms  1.12% 77.53%       10ms  1.12%  runtime.(*pageCache).alloc

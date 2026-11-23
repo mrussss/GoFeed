@@ -1,0 +1,11 @@
+=== RUN   TestPushDiagnosticHistory
+    push_diagnostic_test.go:410: current: IDs=[490026 490025 490024 490022 490021 490020], candidate commands=12
+    push_diagnostic_test.go:411: history-aware: IDs=[490026 490025 490024 490022 490021 490020], candidate commands=9
+    push_diagnostic_test.go:444: current SQL audit: callbacks=4 dry-run=1 actual MySQL SELECT=3
+    push_diagnostic_test.go:444: history-aware SQL audit: callbacks=4 dry-run=1 actual MySQL SELECT=3
+    push_diagnostic_test.go:458: current-mode-only first page: IDs=[490026 490025 490024 490021], historical B=490022 omitted
+    push_diagnostic_test.go:462: current after deletion/unfollow: IDs=[490026 490025 490020], candidate commands=6
+    push_diagnostic_test.go:463: history-aware after deletion/unfollow: IDs=[490026 490025 490020], candidate commands=4
+--- PASS: TestPushDiagnosticHistory (0.21s)
+PASS
+ok  	feedsystem_video_go/internal/feed	0.216s

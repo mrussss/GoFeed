@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:11 CST
+Duration: 4.14s, Total samples = 840ms (20.27%)
+Showing nodes accounting for 660ms, 78.57% of 840ms total
+Showing top 25 nodes out of 278
+      flat  flat%   sum%        cum   cum%
+     230ms 27.38% 27.38%      230ms 27.38%  runtime.futex
+     120ms 14.29% 41.67%      120ms 14.29%  internal/runtime/syscall.Syscall6
+      30ms  3.57% 45.24%       30ms  3.57%  runtime.nextFreeFast (inline)
+      30ms  3.57% 48.81%       30ms  3.57%  runtime.write1
+      20ms  2.38% 51.19%       30ms  3.57%  runtime.(*mcache).prepareForSweep
+      20ms  2.38% 53.57%       20ms  2.38%  runtime.(*randomEnum).next
+      20ms  2.38% 55.95%       20ms  2.38%  runtime.memmove
+      20ms  2.38% 58.33%       20ms  2.38%  runtime.scanobject
+      10ms  1.19% 59.52%       10ms  1.19%  database/sql.(*DB).queryDC.func1
+      10ms  1.19% 60.71%       10ms  1.19%  database/sql.(*Rows).awaitDone
+      10ms  1.19% 61.90%       10ms  1.19%  database/sql/driver.IsValue (inline)
+      10ms  1.19% 63.10%       20ms  2.38%  feedsystem_video_go/internal/middleware/redis.(*Client).ZRevRangeByLexBatch.func1
+      10ms  1.19% 64.29%       10ms  1.19%  fmt.(*pp).printArg
+      10ms  1.19% 65.48%       40ms  4.76%  github.com/go-sql-driver/mysql.(*mysqlStmt).writeExecutePacket
+      10ms  1.19% 66.67%       10ms  1.19%  gogo
+      10ms  1.19% 67.86%       10ms  1.19%  gorm.io/gorm.(*DB).Session
+      10ms  1.19% 69.05%      350ms 41.67%  gorm.io/gorm.(*processor).Execute
+      10ms  1.19% 70.24%       10ms  1.19%  internal/runtime/atomic.(*Uint64).Add
+      10ms  1.19% 71.43%       10ms  1.19%  internal/runtime/atomic.(*UnsafePointer).Load
+      10ms  1.19% 72.62%       10ms  1.19%  internal/sync.(*Mutex).Unlock
+      10ms  1.19% 73.81%       70ms  8.33%  net.(*conn).Write
+      10ms  1.19% 75.00%       10ms  1.19%  reflect.(*rtype).nameOff
+      10ms  1.19% 76.19%       10ms  1.19%  runtime.(*lfstack).pop (inline)
+      10ms  1.19% 77.38%       10ms  1.19%  runtime.(*mheap).allocSpan
+      10ms  1.19% 78.57%       10ms  1.19%  runtime.(*randomEnum).position

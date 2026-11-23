@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:14:57 CST
+Duration: 4.09s, Total samples = 730ms (17.84%)
+Showing nodes accounting for 570ms, 78.08% of 730ms total
+Showing top 25 nodes out of 236
+      flat  flat%   sum%        cum   cum%
+     220ms 30.14% 30.14%      220ms 30.14%  runtime.futex
+      60ms  8.22% 38.36%       60ms  8.22%  internal/runtime/syscall.Syscall6
+      20ms  2.74% 41.10%       20ms  2.74%  runtime.(*mspan).writeHeapBitsSmall
+      20ms  2.74% 43.84%       20ms  2.74%  runtime.cheaprand
+      20ms  2.74% 46.58%       40ms  5.48%  runtime.notesleep
+      20ms  2.74% 49.32%       30ms  4.11%  runtime.scanobject
+      20ms  2.74% 52.05%       50ms  6.85%  runtime.selectgo
+      20ms  2.74% 54.79%       20ms  2.74%  runtime.typedmemmove
+      10ms  1.37% 56.16%       10ms  1.37%  container/heap.Fix
+      10ms  1.37% 57.53%       40ms  5.48%  github.com/go-sql-driver/mysql.(*mysqlConn).watchCancel
+      10ms  1.37% 58.90%       10ms  1.37%  github.com/redis/go-redis/v9/internal/pool.(*ConnPool).isHealthyConn
+      10ms  1.37% 60.27%       10ms  1.37%  github.com/redis/go-redis/v9/internal/proto.(*Reader).ReadLine
+      10ms  1.37% 61.64%       70ms  9.59%  gorm.io/gorm.Scan
+      10ms  1.37% 63.01%       10ms  1.37%  gorm.io/gorm/callbacks.Preload
+      10ms  1.37% 64.38%       10ms  1.37%  gorm.io/gorm/clause.Select.MergeClause
+      10ms  1.37% 65.75%       20ms  2.74%  internal/runtime/atomic.(*Bool).Load
+      10ms  1.37% 67.12%       10ms  1.37%  internal/runtime/atomic.(*Uint8).Load (inline)
+      10ms  1.37% 68.49%       50ms  6.85%  internal/runtime/syscall.EpollWait
+      10ms  1.37% 69.86%       10ms  1.37%  reflect.(*rtype).Kind
+      10ms  1.37% 71.23%       10ms  1.37%  runtime.(*gcBits).bitp (inline)
+      10ms  1.37% 72.60%       10ms  1.37%  runtime.(*itabTableType).find
+      10ms  1.37% 73.97%       10ms  1.37%  runtime.(*mcache).prepareForSweep
+      10ms  1.37% 75.34%       10ms  1.37%  runtime.(*mheap).setSpans
+      10ms  1.37% 76.71%       10ms  1.37%  runtime.(*mspan).refillAllocCache
+      10ms  1.37% 78.08%       10ms  1.37%  runtime.(*randomOrder).start

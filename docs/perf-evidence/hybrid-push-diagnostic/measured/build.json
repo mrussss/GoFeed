@@ -1,0 +1,7 @@
+{
+  "base": "e9f1e4f82654951100250f617ac7b290bc92738f",
+  "binary_sha256": "ac991d62fe1079f68e25f5fe7ccd3a8a8f63b54e0b6c0a17906bd331ca804a21",
+  "go": "go version go1.24.5 linux/amd64",
+  "runner_sha256": "7389bfbf1ae01c7880f35f0957e06260d45a15d1f7d71e1e2840c558c95cc363",
+  "test_sha256": "72017324b0f6603a7e2891f8ffd2f97979e01aaba3a302b061d709f63effddce"
+}

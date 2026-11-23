@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:34 CST
+Duration: 4.13s, Total samples = 780ms (18.87%)
+Showing nodes accounting for 660ms, 84.62% of 780ms total
+Showing top 25 nodes out of 250
+      flat  flat%   sum%        cum   cum%
+     200ms 25.64% 25.64%      200ms 25.64%  runtime.futex
+     160ms 20.51% 46.15%      160ms 20.51%  internal/runtime/syscall.Syscall6
+      30ms  3.85% 50.00%       30ms  3.85%  runtime.typePointers.nextFast (inline)
+      20ms  2.56% 52.56%       20ms  2.56%  reflect.Value.Elem
+      20ms  2.56% 55.13%       20ms  2.56%  runtime.nextFreeFast (inline)
+      20ms  2.56% 57.69%       60ms  7.69%  runtime.notesleep
+      20ms  2.56% 60.26%       80ms 10.26%  runtime.scanobject
+      20ms  2.56% 62.82%       20ms  2.56%  sync/atomic.(*Int32).Add (inline)
+      10ms  1.28% 64.10%       10ms  1.28%  context.(*timerCtx).Done
+      10ms  1.28% 65.38%       20ms  2.56%  database/sql.ctxDriverQuery
+      10ms  1.28% 66.67%       20ms  2.56%  database/sql.driverArgsConnLocked
+      10ms  1.28% 67.95%      500ms 64.10%  feedsystem_video_go/internal/feed.(*FeedService).ListByFollowing
+      10ms  1.28% 69.23%      170ms 21.79%  feedsystem_video_go/internal/feed.(*FeedService).followingVideos.func1
+      10ms  1.28% 70.51%       10ms  1.28%  fmt.(*pp).doPrintf
+      10ms  1.28% 71.79%       80ms 10.26%  github.com/go-sql-driver/mysql.(*buffer).fill
+      10ms  1.28% 73.08%       10ms  1.28%  github.com/go-sql-driver/mysql.(*mysqlRows).Columns
+      10ms  1.28% 74.36%       40ms  5.13%  gorm.io/gorm.(*DB).scanIntoStruct
+      10ms  1.28% 75.64%      140ms 17.95%  gorm.io/gorm.Scan
+      10ms  1.28% 76.92%       10ms  1.28%  internal/poll.(*fdMutex).rwunlock
+      10ms  1.28% 78.21%       10ms  1.28%  internal/runtime/atomic.(*UnsafePointer).StoreNoWB (inline)
+      10ms  1.28% 79.49%       20ms  2.56%  reflect.New
+      10ms  1.28% 80.77%       10ms  1.28%  reflect.unsafe_New
+      10ms  1.28% 82.05%       10ms  1.28%  runtime.(*bucket).mp
+      10ms  1.28% 83.33%       10ms  1.28%  runtime.(*gcBits).bitp (inline)
+      10ms  1.28% 84.62%       10ms  1.28%  runtime.(*lfstack).pop

@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: alloc_space
+Time: 2026-11-22 20:15:29 CST
+Showing nodes accounting for 260.36MB, 94.33% of 276MB total
+Dropped 69 nodes (cum <= 1.38MB)
+Showing top 25 nodes out of 91
+      flat  flat%   sum%        cum   cum%
+   88.51MB 32.07% 32.07%   137.60MB 49.86%  github.com/redis/go-redis/v9.cmdable.zRevRangeBy
+      34MB 12.32% 44.39%       34MB 12.32%  github.com/redis/go-redis/v9.NewStringSliceCmd (inline)
+   32.50MB 11.78% 56.16%    46.01MB 16.67%  feedsystem_video_go/internal/middleware/redis.(*Client).Key (inline)
+   15.09MB  5.47% 61.63%    15.09MB  5.47%  github.com/redis/go-redis/v9.(*Pipeline).BatchProcess (inline)
+      13MB  4.71% 66.34%    13.50MB  4.89%  fmt.Sprintf
+   11.11MB  4.03% 70.37%   149.71MB 54.24%  feedsystem_video_go/internal/middleware/redis.(*Client).ZRevRangeByLexBatch
+       9MB  3.26% 73.63%     9.50MB  3.44%  gorm.io/gorm.(*Statement).clone
+    8.50MB  3.08% 76.71%    16.52MB  5.99%  reflect.Value.extendSlice
+    8.02MB  2.91% 79.62%     8.02MB  2.91%  reflect.growslice
+    7.58MB  2.75% 82.36%     7.58MB  2.75%  feedsystem_video_go/internal/feed.mergeFollowingCandidates
+    7.54MB  2.73% 85.10%   258.37MB 93.61%  feedsystem_video_go/internal/feed.(*FeedService).followingVideos
+       4MB  1.45% 86.55%        4MB  1.45%  strconv.formatBits
+       3MB  1.09% 87.63%        3MB  1.09%  reflect.New
+    2.50MB  0.91% 88.54%     2.50MB  0.91%  reflect.unsafe_NewArray
+    2.50MB  0.91% 89.45%     2.50MB  0.91%  github.com/go-sql-driver/mysql.(*binaryRows).readRow
+       2MB  0.72% 90.17%     2.50MB  0.91%  database/sql.driverArgsConnLocked
+    1.76MB  0.64% 90.81%     2.40MB  0.87%  compress/flate.NewWriter
+    1.72MB  0.62% 91.43%     1.72MB  0.62%  runtime/pprof.StartCPUProfile
+    1.50MB  0.54% 91.98%     1.50MB  0.54%  gorm.io/gorm.(*Statement).AddClause
+    1.50MB  0.54% 92.52%     8.50MB  3.08%  database/sql.(*DB).queryDC
+       1MB  0.36% 92.88%    12.01MB  4.35%  feedsystem_video_go/internal/feed.(*FeedService).buildFeedVideos
+       1MB  0.36% 93.25%        5MB  1.81%  gorm.io/gorm.(*Statement).AddVar
+       1MB  0.36% 93.61%     1.50MB  0.54%  github.com/go-sql-driver/mysql.(*mysqlStmt).query
+       1MB  0.36% 93.97%        2MB  0.72%  database/sql.(*Rows).initContextClose
+       1MB  0.36% 94.33%        6MB  2.17%  gorm.io/gorm/callbacks.BuildQuerySQL

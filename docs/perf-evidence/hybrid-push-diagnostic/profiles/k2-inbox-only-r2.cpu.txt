@@ -1,0 +1,33 @@
+File: feed.test
+Build ID: 4617788a8c2e86e87986a7f24869aff813358ab3
+Type: cpu
+Time: 2026-11-22 20:15:02 CST
+Duration: 4.12s, Total samples = 790ms (19.19%)
+Showing nodes accounting for 670ms, 84.81% of 790ms total
+Showing top 25 nodes out of 244
+      flat  flat%   sum%        cum   cum%
+     270ms 34.18% 34.18%      270ms 34.18%  runtime.futex
+     130ms 16.46% 50.63%      130ms 16.46%  internal/runtime/syscall.Syscall6
+      30ms  3.80% 54.43%       30ms  3.80%  runtime.write1
+      20ms  2.53% 56.96%       20ms  2.53%  runtime.nextFreeFast (inline)
+      20ms  2.53% 59.49%       70ms  8.86%  runtime.selectgo
+      10ms  1.27% 60.76%       10ms  1.27%  context.(*timerCtx).Done
+      10ms  1.27% 62.03%       10ms  1.27%  context.WithCancel.func1
+      10ms  1.27% 63.29%      320ms 40.51%  database/sql.(*DB).queryDC
+      10ms  1.27% 64.56%       10ms  1.27%  database/sql.(*Rows).Columns
+      10ms  1.27% 65.82%       10ms  1.27%  database/sql.(*Rows).nextLocked
+      10ms  1.27% 67.09%      170ms 21.52%  feedsystem_video_go/internal/feed.(*FeedService).followingVideos.func1
+      10ms  1.27% 68.35%       10ms  1.27%  github.com/redis/go-redis/v9/internal/pool.(*ConnPool).popIdle
+      10ms  1.27% 69.62%       10ms  1.27%  gorm.io/driver/mysql.Dialector.QuoteTo
+      10ms  1.27% 70.89%       10ms  1.27%  gorm.io/gorm.(*Statement).AddVar
+      10ms  1.27% 72.15%       10ms  1.27%  gorm.io/gorm/utils.ToString
+      10ms  1.27% 73.42%       10ms  1.27%  internal/runtime/maps.(*Map).putSlotSmallFastStr
+      10ms  1.27% 74.68%       10ms  1.27%  internal/runtime/maps.(*groupReference).key
+      10ms  1.27% 75.95%       10ms  1.27%  internal/runtime/maps.ctrlGroup.matchEmptyOrDeleted
+      10ms  1.27% 77.22%       10ms  1.27%  runtime.(*spanSet).reset
+      10ms  1.27% 78.48%       10ms  1.27%  runtime.(*timer).maybeAdd
+      10ms  1.27% 79.75%       10ms  1.27%  runtime.chanrecv
+      10ms  1.27% 81.01%       10ms  1.27%  runtime.convT
+      10ms  1.27% 82.28%      130ms 16.46%  runtime.findRunnable
+      10ms  1.27% 83.54%      260ms 32.91%  runtime.futexwakeup
+      10ms  1.27% 84.81%       10ms  1.27%  runtime.lock2
