@@ -1,0 +1,5 @@
+=== RUN   TestSmallVEnvironment
+    smallv_direct_test.go:91: Go=go1.24.5 runtime CPUs=32 MySQL=8.0.46 Redis=7.4.11
+    smallv_direct_test.go:94: Redis appendonly=no; experimental clients use DB 15
+--- PASS: TestSmallVEnvironment (0.01s)
+PASS

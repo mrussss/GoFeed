@@ -1,0 +1,9 @@
+authors,mode,repeat,status
+2,push,1,pass
+2,pull,1,pass
+2,pull,2,pass
+2,push,2,pass
+100,push,1,pass
+100,pull,1,pass
+100,pull,2,pass
+100,push,2,pass
